@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: craftsman
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-craftsman}
+      POSTGRES_DB: craftsman
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U craftsman"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:8025:8025"   # web UI
+      - "127.0.0.1:1025:1025"   # SMTP
+      - "127.0.0.1:1143:1143"   # IMAP (pop3+imap enabled below)
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+      MP_ENABLE_IMAP: 1
+
+  api:
+    build: .
+    command: uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    build: .
+    command: celery -A craftsman.workers.celery_app worker -Q research,generate,send,inbox,enrich,settle -l info --concurrency=4
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    command: celery -A craftsman.workers.celery_app beat -l info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    build: .
+    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:8501:8501"
+
+volumes:
+  pgdata:

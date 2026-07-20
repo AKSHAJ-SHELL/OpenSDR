@@ -1,0 +1,39 @@
+# One phrase per line, case-insensitive substring match. Lines starting with # are comments.
+i hope this finds you well
+i hope this email finds you well
+hope you're doing well
+hope you are doing well
+quick question
+just checking in
+just following up
+touching base
+touch base
+circle back
+reaching out because
+i wanted to reach out
+i came across your
+i stumbled upon
+picking your brain
+pick your brain
+synergy
+leverage our
+cutting-edge
+best-in-class
+state-of-the-art
+revolutionize
+game-changer
+game changing
+unlock the power
+supercharge
+seamlessly
+in today's fast-paced world
+in this digital age
+delve
+furthermore,
+moreover,
+it's worth noting
+navigating the
+landscape of
+elevate your
+embark
+unleash

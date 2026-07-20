@@ -1,0 +1,9 @@
+Subject: {{subject_hook}}
+
+Hi {{first_name}},
+
+{{personalization_sentence}}
+
+{{value_prop_bridge}} {{cta_question}}
+
+{{signature}}

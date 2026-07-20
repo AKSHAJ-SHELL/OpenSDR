@@ -1,0 +1,53 @@
+[project]
+name = "craftsman"
+version = "0.1.0"
+description = "Open-source AI SDR with a Thompson-sampling learning loop. Anti-hallucination by construction."
+readme = "README.md"
+license = { text = "AGPL-3.0-only" }
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.2.5",
+    "celery[redis]>=5.4",
+    "redis>=5.0",
+    "pydantic[email]>=2.7",
+    "pydantic-settings>=2.2",
+    "aiosmtplib>=3.0",
+    "dnspython>=2.6",
+    "httpx>=0.27",
+    "selectolax>=0.3.21",
+    "textstat>=0.7.3",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "email-reply-parser>=0.5.12",
+    "anthropic>=0.34",
+    "rapidfuzz>=3.9",
+    "cryptography>=42.0",
+    "python-multipart>=0.0.9",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+dashboard = ["streamlit>=1.36", "plotly>=5.22"]
+dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "ruff>=0.5", "fakeredis>=2.23"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["craftsman*"]
+
+[tool.setuptools.package-data]
+"craftsman.copywriter" = ["skeletons/*.txt", "banned_phrases.txt"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
