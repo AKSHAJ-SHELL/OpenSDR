@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --ink: #121417;
+  --muted: #5c6570;
+  --faint: #8b939e;
+  --line: #e4e7ec;
+  --accent: #d6452f;
+  --accent-ink: #ffffff;
+  --accent-soft: #fde8e3;
+  --good: #1b7a4c;
+  --good-soft: #e5f5ec;
+  --warn: #a15c07;
+  --warn-soft: #fff3df;
+  --info: #1f5f8b;
+  --info-soft: #e6f1f8;
+  --sidebar: #0f1419;
+  --sidebar-ink: #f4f5f7;
+  --sidebar-muted: #9aa3ad;
+  --sidebar-hover: #1a222c;
+  --radius: 12px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.04);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-ink: var(--sidebar-ink);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --font-sans: var(--font-manrope);
+  --font-display: var(--font-fraunces);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-manrope), ui-sans-serif, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.7;
+  }
+}
+
+.animate-rise {
+  animation: rise 0.45s ease-out both;
+}
+
+.animate-rise-delay-1 {
+  animation: rise 0.45s ease-out 0.06s both;
+}
+
+.animate-rise-delay-2 {
+  animation: rise 0.45s ease-out 0.12s both;
+}
+
+.live-dot {
+  animation: pulse-dot 1.8s ease-in-out infinite;
+}

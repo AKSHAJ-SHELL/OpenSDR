@@ -183,6 +183,7 @@ def generate_and_send(self, enrollment_id: str):
         )
         mailbox.sent_today += 1
         db.add(mailbox)
+        enrollment.current_step = step_order  # record which step was actually sent
         apply_event(db, enrollment, Event.SEND_OK, detail={"step": step_order})
         schedule_next_step(db, enrollment, wait_days, lead.timezone)
 
@@ -210,15 +211,31 @@ def enrich_lead(lead_id: str):
 
 @app.task
 def poll_inboxes():
+    from craftsman.core.config import get_settings
     from craftsman.inbox.pipeline import handle_inbound
-    from craftsman.inbox.poller import fetch_unseen
+    from craftsman.inbox.poller import fetch_mailpit, fetch_unseen
 
     llm = get_llm()
+    settings = get_settings()
     with session_scope() as db:
-        mailboxes = db.scalars(select(Mailbox).where(Mailbox.imap_host.isnot(None))).all()
+        mailboxes = db.scalars(
+            select(Mailbox).where(
+                Mailbox.imap_host.isnot(None),
+                Mailbox.imap_host != "",
+            )
+        ).all()
         for mailbox in mailboxes:
             for inbound in fetch_unseen(mailbox):
                 _run(handle_inbound(db, llm, inbound, mailbox_id=mailbox.id))
+
+        if settings.mailpit_url:
+            for inbound in fetch_mailpit(db, settings.mailpit_url):
+                # attribute to first healthy mailbox when present
+                box_id = mailboxes[0].id if mailboxes else None
+                if box_id is None:
+                    any_box = db.scalars(select(Mailbox).limit(1)).first()
+                    box_id = any_box.id if any_box else None
+                _run(handle_inbound(db, llm, inbound, mailbox_id=box_id))
 
 
 # ------------------------------------------------------------------ settle + housekeeping

@@ -1,0 +1,63 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+const NAV = [
+  { href: "/", label: "Overview" },
+  { href: "/leads", label: "Leads" },
+  { href: "/inbox", label: "Inbox" },
+  { href: "/campaigns", label: "Campaigns" },
+  { href: "/analytics", label: "Analytics" },
+];
+
+export function Sidebar() {
+  const pathname = usePathname();
+
+  return (
+    <aside className="flex h-screen w-[240px] shrink-0 flex-col bg-sidebar text-sidebar-ink">
+      <div className="border-b border-white/10 px-5 py-6">
+        <Link href="/" className="block">
+          <div className="font-[family-name:var(--font-display)] text-[1.65rem] font-medium tracking-tight">
+            Craftsman
+          </div>
+          <div className="mt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-sidebar-muted">
+            AI outbound agent
+          </div>
+        </Link>
+      </div>
+
+      <nav className="flex flex-1 flex-col gap-1 px-3 py-4">
+        {NAV.map((item) => {
+          const active =
+            item.href === "/"
+              ? pathname === "/"
+              : pathname.startsWith(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
+                active
+                  ? "bg-accent text-accent-ink"
+                  : "text-sidebar-muted hover:bg-sidebar-hover hover:text-sidebar-ink"
+              }`}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      <div className="border-t border-white/10 px-5 py-4">
+        <div className="flex items-center gap-2 text-xs text-sidebar-muted">
+          <span className="live-dot inline-block h-1.5 w-1.5 rounded-full bg-accent" />
+          Agent online
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-sidebar-muted/80">
+          Learning loop active · Thompson sampling
+        </p>
+      </div>
+    </aside>
+  );
+}

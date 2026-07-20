@@ -54,7 +54,7 @@ The dashboard renders the Beta PDFs converging live (`Bandit` page, with an inte
 
 ## Architecture
 
-FastAPI + Postgres/pgvector + Celery/Redis. One `docker compose up` brings up the API, workers, beat scheduler, Streamlit dashboard, and a [Mailpit](https://mailpit.axllent.org/) sandbox for testing without touching real inboxes.
+FastAPI + Postgres/pgvector + Celery/Redis. One `docker compose up` brings up the API, workers, beat scheduler, Next.js dashboard (`web/`), and a [Mailpit](https://mailpit.axllent.org/) sandbox for testing without touching real inboxes.
 
 Pipeline per lead: ingest → verify email → embed + ICP-score → research (cached 30d per company) → enroll → per step: bandit picks variant → copywriter fills slots → validator gates → send engine dispatches in-window → inbox poller catches the reply → classifier updates state → bandit posterior updates → human notified if interested.
 
@@ -69,17 +69,18 @@ Key modules:
 | `craftsman/inbox/pipeline.py` | Reply → classify → state → bandit → handoff |
 | `craftsman/sender/smtp.py` | Suppression/cap/warmup/rate-limit checks + compliant headers |
 | `craftsman/llm/` | Provider-agnostic structured-output client (Claude default, Ollama fallback, mock for tests) |
+| `web/` | Next.js dashboard (Gojiberry-style agent UI) |
 
 ## Quickstart
 
 ```bash
 cp .env.example .env
-# set ANTHROPIC_API_KEY and generate CRAFTSMAN_SECRET_KEY:
+# set ANTHROPIC_API_KEY (or LLM_PROVIDER=ollama) and generate CRAFTSMAN_SECRET_KEY:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 docker compose up -d
 # API:       http://localhost:8000/docs
-# Dashboard: http://localhost:8501
+# Dashboard: http://localhost:3000
 # Mailpit:   http://localhost:8025
 
 # import leads
@@ -88,7 +89,15 @@ curl -F "file=@leads.csv" http://localhost:8000/leads/import
 # create a campaign, add variants, activate — see /docs
 ```
 
-For local dev without Docker: `pip install -e ".[dashboard,dev]"`, run Postgres (with pgvector) + Redis, then `uvicorn craftsman.api.app:app` and `celery -A craftsman.workers.celery_app worker -B`.
+Local app processes (Ollama on the host): infra via `docker compose up -d postgres redis mailpit`, then:
+
+```bash
+pip install -e ".[dev]"
+uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000
+celery -A craftsman.workers.celery_app worker -Q research,generate,send,inbox,enrich,settle -l info
+celery -A craftsman.workers.celery_app beat -l info
+cd web && npm install && npm run dev   # http://localhost:3000
+```
 
 ## Testing
 

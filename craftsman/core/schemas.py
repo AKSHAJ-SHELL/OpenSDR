@@ -85,6 +85,8 @@ class CampaignOut(BaseModel):
     name: str
     status: str
     daily_cap: int
+    icp_description: str | None = None
+    value_prop: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -112,7 +114,7 @@ class MailboxCreate(BaseModel):
     smtp_port: int = 587
     smtp_user: str
     smtp_password: str
-    imap_host: str
+    imap_host: str | None = None  # omit / empty for Mailpit-only sandboxes
     imap_port: int = 993
     imap_password: str | None = None
     daily_limit: int = 40
@@ -121,6 +123,9 @@ class MailboxCreate(BaseModel):
 class MailboxOut(BaseModel):
     id: uuid.UUID
     email: str
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    imap_host: str | None = None
     daily_limit: int
     sent_today: int
     warmup_stage: int
@@ -129,13 +134,31 @@ class MailboxOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MailboxUpdate(BaseModel):
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    imap_host: str | None = None
+    imap_port: int | None = None
+    imap_password: str | None = None
+    daily_limit: int | None = None
+    health: str | None = None
+    clear_imap: bool = False  # drop IMAP so poller skips this box (Mailpit HTTP instead)
+
+
+
 class MessageOut(BaseModel):
     id: uuid.UUID
     direction: str
     subject: str | None
     body: str | None
     classification: str | None
+    classification_confidence: float | None = None
     sent_at: datetime | None
+    lead_email: str | None = None
+    lead_name: str | None = None
+    company_domain: str | None = None
 
     model_config = {"from_attributes": True}
 

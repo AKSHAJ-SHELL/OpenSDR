@@ -19,6 +19,19 @@ from craftsman.core.schemas import (
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 
+@router.get("", response_model=list[CampaignOut])
+def list_campaigns(db: Session = Depends(get_db)):
+    return list(db.scalars(select(Campaign).order_by(Campaign.name)).all())
+
+
+@router.get("/{campaign_id}", response_model=CampaignOut)
+def get_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "campaign not found")
+    return campaign
+
+
 @router.post("", response_model=CampaignOut)
 async def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
     from craftsman.scoring.embeddings import get_embedder

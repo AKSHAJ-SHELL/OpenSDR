@@ -1,18 +1,49 @@
+# --- Python ---
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 .eggs/
 build/
 dist/
-.env
+*.egg
 .venv/
 venv/
+.env
+.env.*
+!.env.example
+
+# --- Tests / tooling ---
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
-pgdata/
 *.log
+
+# --- Celery ---
+celerybeat-schedule
+celerybeat-schedule.*
+celerybeat.pid
+
+# --- Local data ---
+pgdata/
+
+# --- Editors / OS ---
 .DS_Store
 .idea/
 .vscode/
+*.swp
+*~
+
+# --- Next.js dashboard (web/) ---
+web/node_modules/
+web/.next/
+web/out/
+web/build/
+web/.vercel/
+web/.env
+web/.env.local
+web/.env*.local
+web/*.tsbuildinfo
+web/next-env.d.ts

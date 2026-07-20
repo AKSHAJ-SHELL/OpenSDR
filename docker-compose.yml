@@ -17,6 +17,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -26,13 +28,11 @@ services:
   mailpit:
     image: axllent/mailpit:latest
     ports:
-      - "127.0.0.1:8025:8025"   # web UI
+      - "127.0.0.1:8025:8025"   # web UI + HTTP API
       - "127.0.0.1:1025:1025"   # SMTP
-      - "127.0.0.1:1143:1143"   # IMAP (pop3+imap enabled below)
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY: 1
       MP_SMTP_AUTH_ALLOW_INSECURE: 1
-      MP_ENABLE_IMAP: 1
 
   api:
     build: .
@@ -41,6 +41,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
       REDIS_URL: redis://redis:6379/0
+      MAILPIT_URL: http://mailpit:8025
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,6 +57,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
       REDIS_URL: redis://redis:6379/0
+      MAILPIT_URL: http://mailpit:8025
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,17 +76,18 @@ services:
       redis:
         condition: service_healthy
 
-  dashboard:
-    build: .
-    command: streamlit run dashboard/app.py --server.port 8501 --server.address 0.0.0.0
-    env_file: .env
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
     environment:
-      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
       API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
     depends_on:
       - api
     ports:
-      - "127.0.0.1:8501:8501"
+      - "127.0.0.1:3000:3000"
 
 volumes:
   pgdata:

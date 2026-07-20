@@ -38,5 +38,5 @@ def acquire_send_slot(
         return float(next_ok) - now
 
     interval = rng.uniform(MIN_INTERVAL_S, MAX_INTERVAL_S)
-    r.set(key, now + interval, ex=int(MAX_INTERVAL_S * 2))
+    r.set(key, now + interval, ex=max(1, int(MAX_INTERVAL_S * 2)))
     return 0.0

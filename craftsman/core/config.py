@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Notifications
     slack_webhook_url: str = ""
 
+    # Local sandbox: when set, poll_inboxes also reads Mailpit's HTTP API
+    # (e.g. http://localhost:8025 or http://mailpit:8025 in Docker).
+    mailpit_url: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
