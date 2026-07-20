@@ -1,5 +1,7 @@
 # Craftsman
 
+**This is currently in alpha stage no real inboxes were sent and commands are mocked**
+
 **An open-source AI SDR with a learning loop the funded versions don't have.**
 
 Craftsman runs end-to-end outbound: leads in → researched, personalized sequences out → replies classified → human handoff the moment someone is interested. It never free-writes an email, never auto-replies to a human, and it gets measurably better with every send via a Thompson-sampling bandit over copy variants.
