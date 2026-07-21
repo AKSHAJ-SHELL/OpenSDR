@@ -230,12 +230,13 @@ This is the single structural gate between LLM text and SMTP; it is unconditiona
 one send path and on every retry (verified — there is no bypass, no admin/test-send endpoint, and the
 review queue has no release-and-send route).
 
-> **⚠️ Suspected correctness bug (high value to fix):** numbers go through the *same fuzzy path* as
-> proper nouns (`validator.py:117-124`, both via `_grounded`/`fuzz.partial_ratio`). At ratio 90, a
-> brief containing `$4M` may ground a fill claiming `$40M`, and `1,000` may ground `10,000`. Fuzzy
-> matching is correct for entity strings but **wrong for magnitudes** — an off-by-10× financial claim
-> is a hallucination the gate is meant to stop. **[needs runtime check]** — this is exactly the kind
-> of case worth a dedicated adversarial test.
+> **✅ Fixed (M0.3):** the bug was confirmed at runtime (`10,000` fuzzy-grounded against `1,000`)
+> and closed. Grounding is now two paths: entities keep `partial_ratio ≥ 90`; **numbers take an
+> exact-match path after normalization** (`normalize_numeric` in `validator.py`): currency symbols
+> stripped for matching, separators stripped, magnitude suffixes expanded via `Decimal`
+> (`$4M ≡ $4,000,000 ≢ $40M ≢ $4.2M`), `12%` requires a percent source. The full `TESTING.md`
+> §3.1 table is a permanent regression suite (`tests/adversarial/test_validator_attacks.py`);
+> residual gaps outside the numeric scope are logged in `findings/04-validator.md`.
 
 ### 6.6 Sequencer (`craftsman/sequencer/`)
 - `machine.py` — pure-function state machine; the transition table is data. States:
@@ -375,7 +376,8 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `classifier_confidence_threshold` | 0.7 | config |
 | `bandit_deactivate_min_trials` | 30 | config |
 | `gdpr_mode` | False | config |
-| Fuzzy grounding threshold | 90.0 | `validator.py:14` |
+| Fuzzy grounding threshold (entities only) | 90.0 | `validator.py:14` |
+| Numeric grounding | exact match after normalization; suffixes k/m/b/bn + thousand/million/billion; symbols $€£ value-interchangeable; percent strict | `validator.py normalize_numeric` |
 | Subject/body/grade caps | 7 words / 90 words / grade 8 | `validator.py:15-17` |
 | Copy retry attempts | 2 | `fill.py:92` |
 | Send spacing | 45–90s | `limiter.py:13-14` |
@@ -421,9 +423,10 @@ change these thresholds to make a test pass** — they encode product behavior.
   that no key/token is logged, echoed in error responses, or exposed via `/docs`.
 
 ### B. Correctness / data integrity
-- 🎯 **B1 — Validator fuzzy-matches numbers (⚠️ [needs runtime check]).** See §6.5. Magnitude
-  hallucinations ($4M→$40M) may pass. *Fix:* exact/normalized numeric comparison on a separate path
-  from entity fuzzy-matching.
+- ✅ **B1 — RESOLVED (M0.3).** Confirmed at runtime, then fixed: numbers now take an exact-match
+  path after normalization (Decimal-expanded magnitudes, stripped separators/symbols, percent
+  strictness), fully separate from entity fuzzy-matching. See §6.5, `plans/m0.3-validator.md`,
+  `findings/04-validator.md`.
 - **B2 — Unseeded production RNG (✅).** `pick_arm` uses an unseeded generator; no reproducibility mode.
 - **B3 — Concurrency & idempotency of sends (⚠️ [needs runtime check]).** Per-mailbox spacing is a
   Redis token bucket (good, cross-worker), but verify: (a) can 4 workers each pass a per-campaign cap

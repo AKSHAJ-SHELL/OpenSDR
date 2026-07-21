@@ -20,7 +20,7 @@ Commercial "AI SDR employees" are, mechanically: a state machine, a scraper, two
 
 The LLM never writes an email. It fills **typed slots** in a fixed skeleton, from a **structured research brief** whose every claim must be backed by verbatim source text. Then a deterministic validator gates the output:
 
-1. Every proper noun and number in the fill must appear in the research brief or campaign config (fuzzy match ≥ 0.9) — or the fill is rejected.
+1. Every proper noun in the fill must appear in the research brief or campaign config (fuzzy match ≥ 0.9) — and every **number must match exactly** after normalization ($4M counts as $4,000,000, but never as $40M; 12% needs a percent source). Numbers are never fuzzy-matched. Fail either check and the fill is rejected.
 2. Banned-phrase list (every "I hope this finds you well"-style tell).
 3. Length caps: subject ≤ 7 words, body ≤ 90 words.
 4. Reading grade ≤ 8.
