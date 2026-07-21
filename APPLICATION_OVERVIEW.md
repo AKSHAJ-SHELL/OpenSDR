@@ -197,6 +197,9 @@ research brief (`ResearchBrief`), the copy slots (`SlotFill`), and the reply lab
 ### 6.2 Research agent (`craftsman/research/`)
 - `fetch.py` — `httpx` GETs `https://{domain}` + `/about`, `/about-us`, `/company`; strips HTML via
   selectolax; caps at `MAX_CHARS=24_000`; skips pages under 200 cleaned chars; 15s timeout.
+  **SSRF-guarded (M0.5):** `validate_url` enforces https-only + port 443 and rejects any host that
+  resolves to a private/loopback/link-local/CGNAT/reserved IP; redirects are followed manually and
+  re-validated per hop (≤3). Unsafe URLs are skipped, not fetched.
 - `agent.py` — `research_company`: if brief fresh (<30d) return cached; else fetch → one structured
   LLM call (`RESEARCH_SYSTEM`) → `ResearchBrief` cached on the company row. Raises `ResearchError`
   if no fetchable sources.
@@ -409,11 +412,14 @@ change these thresholds to make a test pass** — they encode product behavior.
   dashboard has scrypt password login + a session-gated proxy that keeps the API key server-side;
   `/docs` gated behind `read`; loud exposure warning in the quickstart. See `craftsman/api/auth.py`,
   `tests/{unit,e2e,adversarial}/test_auth*`, and `plans/m0.1-auth.md`.
-- **A2 — SSRF surface in the research fetcher (⚠️ [needs runtime check]).** `research/fetch.py` GETs
-  URLs derived from a CSV-supplied company domain with redirects followed and no allowlist / no
-  private-IP guard / no scheme check. A crafted domain could target `169.254.169.254`,
-  `localhost:6379`, or internal hosts. *Fix:* scheme allowlist (https only), DNS-resolve + block
-  private/link-local ranges, disable or bound redirects.
+- ✅ **A2 — RESOLVED (M0.5).** Confirmed exploitable (CSV `company_domain` flows verbatim into
+  `https://{domain}` with redirects followed), then closed. `validate_url` now enforces an https-only
+  scheme + port-443 allowlist and resolves the host, rejecting any result in a private/loopback/
+  link-local (incl. the `169.254` metadata range)/CGNAT/reserved range; a single private record
+  rejects the host wholesale. Redirects are followed manually, bounded to 3 hops, each re-validated —
+  so `evil.com → http://169.254…` is caught. Blocked URLs are skipped (fail-closed → the lead lands
+  `research_failed`). Residual: a DNS-rebinding TOCTOU window remains (documented, `findings/06`).
+  See `plans/m0.5-ssrf.md`, `tests/unit/test_fetch_ssrf.py`, `tests/adversarial/test_fetch_ssrf_attacks.py`.
 - **A3 — Prompt injection into the copywriter (⚠️).** Research briefs are LLM-summarized web text that
   flow into copy. The slot-fill + validator design *should* contain this (ungrounded claims get
   rejected), but injected text that is *genuinely present in the brief* would pass the grounding gate.
