@@ -85,9 +85,12 @@ services:
       API_URL: http://api:8000
       NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
       # Dashboard auth — the API key stays server-side (never shipped to the browser).
-      CRAFTSMAN_API_KEY: ${CRAFTSMAN_API_KEY:?set CRAFTSMAN_API_KEY — see .env.example}
-      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?set DASHBOARD_PASSWORD_HASH — run web/scripts/hash-password.mjs}
-      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:?set DASHBOARD_SESSION_SECRET — a random string}
+      # Optional here (empty default) so `docker compose up postgres` isn't blocked by
+      # global interpolation; the web app itself refuses to start if any is unset/blank
+      # (see web/src/lib/session.ts and password.ts). Set them in .env — see .env.example.
+      CRAFTSMAN_API_KEY: ${CRAFTSMAN_API_KEY:-}
+      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:-}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:-}
     depends_on:
       - api
     ports:
