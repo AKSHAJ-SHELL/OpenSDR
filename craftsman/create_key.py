@@ -11,7 +11,7 @@ import argparse
 import sys
 
 from craftsman.api.auth import SCOPES, generate_token, hash_token, key_prefix
-from craftsman.core.db import init_db, session_scope
+from craftsman.core.db import run_migrations, session_scope
 from craftsman.core.models import ApiKey
 
 
@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    init_db()
+    run_migrations()  # ensure the schema (incl. api_keys) exists before inserting
     token = generate_token()
     scopes = list(dict.fromkeys(args.scopes))
     with session_scope() as db:

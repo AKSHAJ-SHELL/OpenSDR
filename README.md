@@ -148,11 +148,17 @@ python scripts/seed_demo.py         # populate the dashboard with demo data
 ```
 
 The unit layer is pure functions and a mock LLM — no API key, no network. Integration tests
-(including the auth flow and a fail-closed route audit that 401s every non-allowlisted
-endpoint) run against real Postgres and skip cleanly if it's absent. `tests/adversarial/`
-holds the predict-then-run attack cases: fuzzed tokens, scheme confusion, revoked-key
-reuse, query-string tokens. The classifier eval includes the replies that matter: the OOO
-that mentions interest, the polite unsubscribe, the helpdesk auto-ack.
+(including the auth flow, a fail-closed route audit that 401s every non-allowlisted endpoint,
+and the Alembic migration round-trip) run against real Postgres and skip cleanly if it's
+absent. `tests/adversarial/` holds the predict-then-run attack cases: fuzzed tokens, scheme
+confusion, revoked-key reuse, query-string tokens. The classifier eval includes the replies
+that matter: the OOO that mentions interest, the polite unsubscribe, the helpdesk auto-ack.
+
+**Schema changes ship a migration.** The database schema is managed by Alembic
+(`craftsman/migrations/`); the API runs `alembic upgrade head` on startup, so
+`docker compose up` stays one command. When you change a model, generate a migration
+(`alembic revision --autogenerate -m "what changed"`) and review it — a CI check fails if
+the models and migrations drift apart.
 
 ## Compliance
 

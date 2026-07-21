@@ -11,9 +11,10 @@ from craftsman.api.routers import analytics, campaigns, inbox, keys, leads, mail
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from craftsman.core.db import init_db
+    from craftsman.core.db import run_migrations
 
-    init_db()
+    # Apply schema migrations on startup so `docker compose up` stays one command.
+    run_migrations()
     yield
 
 

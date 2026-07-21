@@ -1,0 +1,536 @@
+# Craftsman (OpenSDR) — Complete Application Overview & Enterprise-Refinement Brief
+
+> **Purpose of this document.** A single, top-down, source-verified map of the entire
+> application, written so a second engineer (or a fresh Claude session) can understand
+> everything at once and drive it to enterprise grade. Every structural claim is grounded
+> in the code at `file:line`. Where something is a *suspected* issue that needs a runtime
+> test rather than a code fact, it is marked **[needs runtime check]**.
+>
+> **Current state (as verified 2026-07):** functional alpha. `59` automated tests pass
+> (README says 54 — stale). The core learning loop, anti-hallucination gate, state machine,
+> compliance headers, and dashboard all work. It is **not** production/enterprise ready —
+> see §11. The README itself says: *"alpha stage, no real inboxes were sent, commands are mocked."*
+
+---
+
+## 1. What it is (one screen)
+
+Craftsman is an **open-source AI SDR** (sales development rep): you load leads, it researches
+each company, writes personalized cold-email sequences under a strict anti-hallucination gate,
+sends them inside the lead's business hours, classifies replies, hands interested humans off to
+a person, and **learns which copy works** via a Thompson-sampling bandit over copy variants.
+
+The thesis (from the README): a commercial "AI SDR employee" is mechanically *a state machine +
+a scraper + two constrained LLM calls + SMTP plumbing + a contextual bandit*. This repo is the
+honest, inspectable version. Two design commitments define it:
+
+1. **The LLM never free-writes an email.** It fills four typed slots in a fixed skeleton, from a
+   structured research brief, and a deterministic validator rejects any fill whose proper
+   nouns/numbers aren't grounded in the brief. (§6.5)
+2. **It never auto-replies to a human.** Inbound replies only ever change state, update the
+   bandit, suppress, or ping Slack — no code path composes a reply back. (§6.8, verified)
+
+**Stack:** FastAPI + Postgres/pgvector + Celery/Redis + a Next.js dashboard, all via
+`docker compose up`. LLM is provider-agnostic (Anthropic default, Ollama fallback, mock for tests).
+
+---
+
+## 2. System architecture
+
+```mermaid
+flowchart TB
+    subgraph client [Interfaces]
+        DASH["Next.js dashboard<br/>web/ (:3000)"]
+        SWAG["FastAPI /docs (:8000)"]
+        CSV["CSV upload / curl"]
+    end
+
+    subgraph api [FastAPI app  craftsman/api]
+        ROUTERS["routers: leads, campaigns,<br/>inbox, mailboxes, analytics, unsubscribe"]
+    end
+
+    subgraph workers [Celery workers  craftsman/workers]
+        BEAT["beat scheduler"]
+        TICK["sequencer_tick (60s)"]
+        RESEARCH["research_enrollment"]
+        GEN["generate_and_send"]
+        ENRICH["enrich_lead"]
+        POLL["poll_inboxes (120s)"]
+        SETTLE["settle_bandit (3600s)"]
+        RESET["reset_daily_counters (24h)"]
+    end
+
+    subgraph core [Domain logic  craftsman/]
+        RES["research/ (fetch + LLM brief)"]
+        SCORE["scoring/ (embeddings + ICP)"]
+        COPY["copywriter/ (fill + validator)"]
+        SEQ["sequencer/ (state machine + scheduling)"]
+        SEND["sender/ (smtp + limiter + warmup)"]
+        INBOX["inbox/ (poller + classifier + pipeline)"]
+        BANDIT["bandit/ (thompson + settle)"]
+        COMPLY["compliance/ (suppression + unsubscribe)"]
+        LLM["llm/ (anthropic | ollama | mock)"]
+    end
+
+    subgraph data [Infrastructure]
+        PG[("Postgres + pgvector")]
+        REDIS[("Redis<br/>broker + rate-limit bucket")]
+        MAIL["Mailpit sandbox<br/>SMTP :1025 / API :8025"]
+    end
+
+    subgraph ext [External network]
+        ANTH["Anthropic API"]
+        WEB["company websites (research)"]
+        SLACK["Slack webhook"]
+        SMTP["real SMTP/IMAP (prod)"]
+    end
+
+    DASH --> ROUTERS
+    SWAG --> ROUTERS
+    CSV --> ROUTERS
+    ROUTERS --> PG
+    ROUTERS -. enqueue .-> REDIS
+    BEAT --> TICK & POLL & SETTLE & RESET
+    TICK -. enqueue .-> RESEARCH & GEN
+    ENRICH --> PG
+    RESEARCH --> RES --> WEB & LLM
+    GEN --> SCORE & COPY & SEQ & SEND & BANDIT
+    LLM --> ANTH
+    SEND --> MAIL
+    SEND --> SMTP
+    POLL --> INBOX --> LLM
+    INBOX --> BANDIT & COMPLY & SLACK
+    workers --> PG & REDIS
+```
+
+**Key architectural fact:** the pipeline is **asynchronous and DB-driven**, not a synchronous
+request chain. A lead cannot go "CSV → sent email" in one call. It flows through three Celery
+task boundaries plus an operator action (`activate`) plus a 60-second beat tick. State lives in
+Postgres; workers are stateless; the only cross-worker coordination is Postgres row locks
+(`SELECT ... FOR UPDATE SKIP LOCKED`) and a Redis token bucket for send spacing.
+
+---
+
+## 3. The per-lead pipeline (end to end)
+
+Ordered, with the real function names and file:line. This is the spine of the whole product.
+
+| # | Stage | Trigger | Code | Result |
+|---|---|---|---|---|
+| 1 | **Ingest** | `POST /leads/import` | `import_csv` (`ingest/csv_import.py:35`) | Leads created (`status="new"`), deduped vs existing + suppression list, syntax-gated |
+| 2 | **Verify email** | Celery `enrich_lead` | `verify_email` (`ingest/verify.py:47`) | syntax → MX → optional SMTP RCPT; sets `email_verified`, `status="verified"` |
+| 3 | **Campaign activate** | `POST /campaigns/{id}/activate` (operator) | `activate` (`api/routers/campaigns.py:74`) | Verified leads ICP-scored; sub-threshold → `disqualified`; else `Enrollment(state="queued")` |
+| 4 | **Tick picks up work** | beat every 60s → `sequencer_tick` | `tick` (`sequencer/tick.py:59`) | `queued`→enqueue research; `ready`/`waiting`(timer)→enqueue send |
+| 5 | **Research** | Celery `research_enrollment` | `research_company` (`research/agent.py:25`) | Fetches company pages → one structured LLM brief → cached 30d on `companies.research_brief`; state→`ready` |
+| 6 | **Embed + ICP score** | during activate (step 3) | `scoring/icp.py`, `scoring/embeddings.py` | `icp_score` = `0.7*cosine + 0.3*rule_score` |
+| 7 | **Pick variant** | inside `generate_and_send` | `pick_arm` (`bandit/thompson.py:34`) | Thompson-samples each active variant's Beta posterior; argmax |
+| 8 | **Fill copy** | inside `generate_and_send` | `generate_copy` (`copywriter/fill.py:84`) | One LLM call fills 4 slots; rendered into skeleton |
+| 9 | **Validate (the gate)** | inside fill | `validate_fill` (`copywriter/validator.py:98`) | 4 gates; fail→retry once with errors→2nd fail→`ReviewQueueItem`, state→`error`, **no send** |
+| 10 | **Pre-send checks** | inside `generate_and_send` | `run_presend_checks` (`sender/smtp.py:71`) | suppression → campaign cap → mailbox cap (warmup-adjusted) → Redis rate slot |
+| 11 | **Build + send** | inside `generate_and_send` | `build_email`→`deliver` (`sender/smtp.py:85,117`) | Plain-text email w/ compliance+threading headers → `aiosmtplib.send` (the one wire-send) |
+| 12 | **Record + schedule next** | after send | `tasks.py:170-188` | Outbound `Message(bandit_outcome="pending", outcome_deadline)`; state→`waiting`; schedule next step |
+| 13 | **Poll replies** | beat every 120s → `poll_inboxes` | `fetch_unseen`/`fetch_mailpit` (`inbox/poller.py`) | Matches inbound to a thread we own |
+| 14 | **Classify** | inside `handle_inbound` | `classify_reply` (`inbox/classifier.py:29`) | One enum-constrained LLM call → label + confidence |
+| 15 | **Apply** | inside pipeline | `apply_classification` (`inbox/pipeline.py:89`) | State transition + bandit update + suppress/Slack. conf<0.7 → review queue |
+| 16 | **Settle bandit** | beat hourly → `settle_bandit` | `settle_expired` (`bandit/settle.py`) | Pending messages past `outcome_deadline` with no reply → `beta += 1` (failure) |
+| 17 | **Daily reset** | beat daily → `reset_daily_counters` | `tasks.py:253` | `sent_today=0`, bounce counters reset, degraded→ok, warmup stage +1 |
+
+---
+
+## 4. Data model
+
+SQLAlchemy models in `craftsman/core/models.py`. Schema is applied by **Alembic migrations**
+(`craftsman/migrations/`) — the API runs `run_migrations()` (`alembic upgrade head`) on startup
+(`api/app.py`). `Base.metadata.create_all` via `init_db()` survives only as the fast dev/test/demo
+path (used by tests and the seed scripts). *(M0.2)*
+
+| Table | Key fields | Notes |
+|---|---|---|
+| **companies** | `domain` (unique), `research_brief` (JSONB), `research_fetched_at`, `embedding` Vector(1024) | Research cached here, 30d TTL |
+| **leads** | `email` (unique), `company_id` FK, name/title/linkedin, `timezone` (default `America/Los_Angeles`), `email_verified`, `icp_score`, `status` (new/verified/disqualified/suppressed), `source` | The canonical PII row |
+| **campaigns** | `name`, `icp_description`, `value_prop`, `sender_persona` (JSONB), `daily_cap` (50), `status` (draft/active/paused/done), `icp_embedding` Vector(1024) | |
+| **sequence_steps** | `campaign_id` FK, `step_order` (1=opener,2=bump,3=breakup), `wait_days` (3); unique(campaign,step_order) | Drip structure |
+| **variants** | `step_id` FK, `name` (pain_led/trigger_led/question_led), `skeleton`, `slot_schema` (JSONB), `alpha`/`beta` (Beta prior 1/1), `active` | **Each variant = a bandit arm** |
+| **enrollments** | `lead_id`+`campaign_id` (unique), `state`, `current_step`, `next_action_at`; partial index on due states | One lead's journey through one campaign |
+| **messages** | `enrollment_id` FK, `variant_id` FK, `direction` (outbound/inbound), `mailbox_id`, subject/body, `smtp_message_id`, `classification`(+confidence), `bandit_outcome` (pending/success/failure), `outcome_deadline`, `sent_at` | Holds **reply content + email PII** |
+| **mailboxes** | `email` (unique), SMTP/IMAP host/port/user, `smtp_pass_enc`/`imap_pass_enc` (Fernet-encrypted), `daily_limit` (40), `sent_today`, `warmup_stage` (0..4), `health` (ok/degraded/paused), `hard_bounces_today` | Sending identities |
+| **suppression_list** | `email` (PK), `reason` (unsubscribe/bounce/manual/gdpr), `created_at` | Permanent do-not-contact |
+| **audit_log** | `enrollment_id`, from/to state, event, detail (JSONB) | Every state transition |
+| **review_queue** | `kind` (classification/copywriter), `message_id`/`enrollment_id`, `payload` (JSONB), `resolved` | Human-in-the-loop items |
+| **unsubscribe_tokens** | `token` (PK), `lead_email`, `created_at` | One-click unsubscribe |
+
+**Relationship spine:** Company 1─* Lead 1─* Enrollment *─1 Campaign 1─* SequenceStep 1─* Variant.
+Message *─1 Enrollment and *─1 Variant (this is how a reply is attributed to the arm that earned it).
+
+> **Enterprise flag:** no child FK declares `ON DELETE CASCADE`. This directly breaks GDPR erasure
+> (§11-C2) and risks integrity errors when deleting a lead that has enrollments.
+
+---
+
+## 5. LLM abstraction (`craftsman/llm/`)
+
+- `client.py` — `LLMClient` protocol with `.structured(system, user, schema, ...)` returning a
+  validated Pydantic object. `get_llm()` picks the impl from `LLM_PROVIDER` (anthropic/ollama/mock).
+- `anthropic_impl.py` — official `anthropic` SDK, model default `claude-sonnet-4-6`, `MAX_RETRIES=2`.
+- `ollama_impl.py` — local Ollama `/api/chat`, default `qwen2.5:14b`, 120s timeout.
+- `mock_impl.py` — deterministic canned structured outputs; **this is what the test suite uses** (no
+  API key, no network).
+
+Every LLM interaction in the app is **structured output only** (a schema is always passed): the
+research brief (`ResearchBrief`), the copy slots (`SlotFill`), and the reply label
+(`ReplyClassification`). There is no free-text generation anywhere. Schemas live in `core/schemas.py`.
+
+---
+
+## 6. Core subsystems (module by module)
+
+### 6.1 Ingest & verification (`craftsman/ingest/`)
+- `csv_import.py` — column-alias normalization, syntax gate, dedupe vs leads + suppression, creates
+  Company+Lead. Returns `ImportResult{imported,deduped,suppressed,errors}`.
+- `verify.py` — `syntax_ok` → `mx_hosts` (dnspython MX) → optional `smtp_rcpt_ok` (SMTP RCPT probe
+  on port 25, only if `do_rcpt=True`). This is the "syntax → MX → SMTP" verification the README claims.
+- `adapters.py` — Apollo/Hunter enrichment adapters. **⚠️ Orphaned:** no caller in the ingest→send
+  path; `enrich_lead` uses `verify.py` only. Dead code or unwired feature. They still define real
+  external API calls (Apollo, Hunter).
+
+### 6.2 Research agent (`craftsman/research/`)
+- `fetch.py` — `httpx` GETs `https://{domain}` + `/about`, `/about-us`, `/company`; strips HTML via
+  selectolax; caps at `MAX_CHARS=24_000`; skips pages under 200 cleaned chars; 15s timeout.
+- `agent.py` — `research_company`: if brief fresh (<30d) return cached; else fetch → one structured
+  LLM call (`RESEARCH_SYSTEM`) → `ResearchBrief` cached on the company row. Raises `ResearchError`
+  if no fetchable sources.
+- `prompts.py` — the grounded research prompt.
+- **`ResearchBrief`** = `{what_they_do, industry, trigger_events[], likely_pain_points[≤3], evidence_quotes[]}`.
+  This brief is the *only* source of facts the copywriter is allowed to use.
+
+### 6.3 Scoring (`craftsman/scoring/`)
+- `embeddings.py` — pluggable embedder; default `hash` (deterministic, offline), optional Voyage API.
+  Dim 1024.
+- `icp.py` — final score = `0.7*cosine_similarity(lead/company vs ICP) + 0.3*rule_score`, where
+  rule_score is seniority-keyword weighted (VP/Head/Director…), unknown title → 0.3 neutral.
+  `icp_threshold=0.55` gates enrollment at activate time.
+
+### 6.4 Copywriter (`craftsman/copywriter/fill.py`)
+- Skeleton has 4 LLM-filled slots (`subject_hook`, `personalization_sentence`, `value_prop_bridge`,
+  `cta_question`) + static fills (`first_name`, `signature`).
+- `generate_copy` loop: LLM fill → render → `validate_fill`. On failure, append validator errors to
+  the prompt and retry **once**. Second failure → `CopyResult(ok=False)` → caller routes to review
+  queue and does **not** send. `max_attempts=2`, `max_tokens=400`, `temperature=0.7`.
+
+### 6.5 Validator — the anti-hallucination gate (`craftsman/copywriter/validator.py`)
+Four deterministic gates, all must pass:
+1. **Grounding** — every proper noun and number extracted from the fill must appear in the grounding
+   corpus (research brief + campaign config + lead fields), via substring or `rapidfuzz.partial_ratio
+   ≥ FUZZY_THRESHOLD (90.0)`.
+2. **Banned phrases** — a curated list (`banned_phrases.txt`) + em/en-dash rejection.
+3. **Length caps** — subject ≤ 7 words, body ≤ 90 words.
+4. **Reading grade** — `textstat.flesch_kincaid_grade` ≤ 8.
+
+This is the single structural gate between LLM text and SMTP; it is unconditionally invoked on the
+one send path and on every retry (verified — there is no bypass, no admin/test-send endpoint, and the
+review queue has no release-and-send route).
+
+> **⚠️ Suspected correctness bug (high value to fix):** numbers go through the *same fuzzy path* as
+> proper nouns (`validator.py:117-124`, both via `_grounded`/`fuzz.partial_ratio`). At ratio 90, a
+> brief containing `$4M` may ground a fill claiming `$40M`, and `1,000` may ground `10,000`. Fuzzy
+> matching is correct for entity strings but **wrong for magnitudes** — an off-by-10× financial claim
+> is a hallucination the gate is meant to stop. **[needs runtime check]** — this is exactly the kind
+> of case worth a dedicated adversarial test.
+
+### 6.6 Sequencer (`craftsman/sequencer/`)
+- `machine.py` — pure-function state machine; the transition table is data. States:
+  `queued | researching | ready | waiting | replied_interested | replied_objection | replied_not_now
+  | ooo_rescheduled | bounced | unsubscribed | finished_no_reply | error`. Terminal states never
+  re-scan. `"*"` wildcard routes BOUNCE/UNSUBSCRIBE from any non-terminal state.
+- `scheduling.py` — `next_send_time`: earliest business-hours slot (9:00–16:30 lead-local, ±20min
+  jitter, weekends skipped), returns UTC. Bad timezone → falls back to `America/Los_Angeles`.
+- `tick.py` — `tick()` scans due enrollments with `FOR UPDATE SKIP LOCKED` (batch 200), applies
+  timers, and calls the injected enqueue callbacks. `apply_event` writes the audit log.
+
+### 6.7 Sender & compliance (`craftsman/sender/`, `craftsman/compliance/`)
+- `smtp.py` — `run_presend_checks` (suppression → campaign daily cap → mailbox pick with
+  warmup-adjusted cap → Redis rate slot), `build_email` (plain-text + `List-Unsubscribe` +
+  `List-Unsubscribe-Post: One-Click` + threading headers + CAN-SPAM physical-address footer),
+  `deliver` (aiosmtplib, STARTTLS@587), `record_bounce` (2 hard bounces/day → `degraded` → cap halves).
+- `limiter.py` — Redis token bucket, one send per mailbox per 45–90s (jittered).
+- `warmup.py` — `WARMUP_CAPS = {0:10, 1:20, 2:30, 3:40}`, stage ≥4 → full `daily_limit`.
+- `compliance/suppression.py` — `is_suppressed`, `suppress`, `make_unsubscribe_token`, `erase_lead`.
+- `compliance/unsubscribe.py` — token processing for the `/u/{token}` endpoints.
+- **GDPR mode** blocks EU-TLD enrollment — a **weak heuristic** (an EU resident on a `.com` Gmail is
+  still covered by GDPR but not blocked). Should be documented as such.
+
+### 6.8 Inbox (`craftsman/inbox/`)
+- `poller.py` — IMAP (`imaplib`) UNSEEN fetch + Mailpit HTTP API fetch (sandbox); `match_thread`
+  attributes an inbound to an outbound we sent.
+- `reply_parser.py` — `strip_quoted` removes quoted history so the classifier sees only fresh text.
+- `classifier.py` — one enum-constrained LLM call → `ReplyClassification{label, ooo_return_date?,
+  confidence}`. Labels: interested/objection/not_now/ooo/unsubscribe/bounce_or_auto. `temperature=0.0`.
+- `pipeline.py` — `handle_inbound`: match → strip → classify → store. `confidence < 0.7` → review
+  queue (no state change). Else `apply_classification`: state transition + bandit update + side
+  effects (unsubscribe→suppress; bounce→suppress+degrade mailbox; **interested→Slack webhook only**).
+- **Verified guarantee:** no inbound outcome composes or sends an email. The only inbound→*eventual*
+  outbound linkage is `ooo` → `ooo_rescheduled` → timer → resumes the already-queued drip on the
+  return date (a deferral of existing outreach, not a reply to the inbound).
+
+### 6.9 Bandit — the learning loop (`craftsman/bandit/`)
+- `thompson.py` (~80 lines) — each variant is an arm with `Beta(alpha,beta)`. `pick_arm` samples each
+  posterior and takes argmax. `update_arm`: any human reply (interested/objection/not_now) → `alpha+=1`
+  (success); unsubscribe → `beta+=1` (failure); ooo/bounce → **no update** (not the copy's fault).
+  `should_deactivate`: arm dies if `trials ≥ 30` and `mean < 0.5 * best_mean`. `posterior_pdf` for the
+  dashboard.
+- `settle.py` — `record_reply_outcome` (immediate update from a reply) and `settle_expired` (pending
+  sends past deadline with no reply → failure). This is the delayed-feedback mechanism.
+- `simulator.py` — runs the bandit against synthetic reply rates (0.06/0.02/0.035, seed 42, 500 sends)
+  to show convergence with zero real email. `python -m craftsman.bandit.simulator`.
+
+> **⚠️ Reproducibility flag:** the production sampler uses `np.random.default_rng()` with **no seed**
+> (`tasks.py:113`). The simulator is seeded but the live path is not — makes live behavior non-deterministic
+> and downstream tests of the send path inherently flaky. Consider a seedable RNG mode.
+
+### 6.10 Workers (`craftsman/workers/`)
+- `celery_app.py` — Redis broker/backend; queues `research, generate, send, inbox, enrich, settle`;
+  `task_acks_late=True`, `worker_prefetch_multiplier=1`. Beat: tick 60s, poll 120s, settle 3600s,
+  reset 86400s.
+- `tasks.py` — thin async-bridging wrappers (`_run` spins a fresh event loop per call). The 3 task
+  boundaries that matter: `research_enrollment`, `generate_and_send` (the only sender), `poll_inboxes`.
+
+---
+
+## 7. API surface (`craftsman/api/`)
+
+**⚠️ There is NO authentication or authorization on ANY endpoint.** The only dependency anywhere is
+`Depends(get_db)` (a DB-session provider). Anyone who can reach port 8000 can read the entire lead
+database, add mailboxes with SMTP creds, activate campaigns (send mail), and erase leads. This is the
+single highest-severity gap for enterprise use.
+
+| Method | Path | Purpose | Mutates |
+|---|---|---|---|
+| POST | `/leads/import` | CSV import → leads + enqueue verify | ✅ |
+| GET | `/leads` | list leads (`score_gte`, `status`, `limit`) | |
+| DELETE | `/leads/{id}/erase` | GDPR erase (⚠️ incomplete — see §11-C2) | ✅ |
+| GET/GET | `/campaigns`, `/campaigns/{id}` | list / fetch | |
+| POST | `/campaigns` | create campaign + steps | ✅ |
+| POST | `/campaigns/{id}/variants` | add copy variant (bandit arm) | ✅ |
+| POST | `/campaigns/{id}/activate` | ICP-score verified leads, enroll, activate → **starts sending** | ✅ |
+| POST | `/campaigns/{id}/pause` | pause campaign | ✅ |
+| GET | `/campaigns/{id}/bandit` | per-variant posteriors | |
+| GET | `/inbox` | latest inbound (label filter) | |
+| GET | `/inbox/review` | unresolved review-queue items | |
+| POST | `/inbox/{id}/reclassify` | human classification override (confidence 1.0) | ✅ |
+| POST/PATCH/GET | `/mailboxes` … | create/update/list mailboxes (stores encrypted secrets) | ✅ |
+| GET | `/analytics/overview` | sent/replies/interested/reply_rate/rejections/state histograms | |
+| GET/POST | `/u/{token}` | unsubscribe (GET confirm page, POST RFC-8058 one-click) | ✅ |
+| GET | `/health` | liveness | |
+
+---
+
+## 8. Frontend — Next.js dashboard (`web/`)
+
+App-router; all pages are **async server components** with `dynamic="force-dynamic"`, fetching the API
+server-side (so page loads don't hit CORS) and rendering `<ApiDown>` on failure. Data layer:
+`web/src/lib/api.ts` (base URL from `API_URL` → `NEXT_PUBLIC_API_URL` → `http://127.0.0.1:8000`, no
+auth headers).
+
+| Page | File | Shows | Interactive (client) parts |
+|---|---|---|---|
+| Overview `/` | `app/page.tsx` | Metric cards (Sent, Reply rate, Interested, Copy blocked), "Needs attention" (interested + review), pipeline state bars, mailbox health | none |
+| Leads | `app/leads/page.tsx` | Table: name/email, title, ICP score bar, status, verified | none (no erase UI wired) |
+| Inbox | `app/inbox/page.tsx` + `InboxView` | Thread list/detail, label filter tabs | ✅ filter refetch + **reclassify** (browser POST) |
+| Campaigns | `app/campaigns/page.tsx` + `CampaignActions` | Card per campaign | ✅ **Activate/Pause** (browser POST) |
+| Analytics | `app/analytics/page.tsx` + `BanditChart` | Converging Beta-PDF charts + per-variant table (recharts) | ✅ live client render of real posteriors |
+
+Shared UI: `ApiDown`, `PageHeader`, `Metric`, `Badge` (status→tone), `EmptyState`. Note `web/AGENTS.md`
+warns this is a **modified Next.js** — read `node_modules/next/dist/docs/` before writing Next code.
+
+> **CORS note:** the API allow-list is hardcoded to `:3000` only (`api/app.py:26-29`). Browser-side
+> actions (activate/pause, reclassify) only work when the dashboard is served on `:3000`.
+
+---
+
+## 9. Infrastructure & deployment
+
+- **`docker compose up`** brings up: `postgres` (pgvector/pgvector:pg16), `redis`, `mailpit`
+  (SMTP :1025 / UI+API :8025), `api` (uvicorn :8000), `worker` (celery, `--concurrency=4`), `beat`,
+  `web` (Next :3000). All ports bound to `127.0.0.1`.
+- **Local dev** (what's running now): infra in Docker, app processes on the host — `uvicorn` on :8000,
+  `celery worker`/`beat`, `npm run dev` for the dashboard.
+- **Schema:** applied by Alembic migrations (`alembic upgrade head`) on API startup; `create_all`
+  is now the dev/test/demo-only path. *(M0.2)*
+- **Secrets:** SMTP/IMAP passwords encrypted at rest with Fernet (`core/crypto.py`, key
+  `CRAFTSMAN_SECRET_KEY`). LLM keys and the Fernet key live in `.env`.
+
+---
+
+## 10. Configuration & tunables (the knobs)
+
+All in `craftsman/core/config.py` unless noted. **The working agreement for this repo is: do not
+change these thresholds to make a test pass** — they encode product behavior.
+
+| Knob | Default | Where |
+|---|---|---|
+| `LLM_PROVIDER` | anthropic (mock in tests) | config |
+| `anthropic_model` | `claude-sonnet-4-6` | config |
+| `icp_threshold` | 0.55 | config |
+| Send window | 9:00–16:30 lead-local, ±20min jitter | config |
+| `classifier_confidence_threshold` | 0.7 | config |
+| `bandit_deactivate_min_trials` | 30 | config |
+| `gdpr_mode` | False | config |
+| Fuzzy grounding threshold | 90.0 | `validator.py:14` |
+| Subject/body/grade caps | 7 words / 90 words / grade 8 | `validator.py:15-17` |
+| Copy retry attempts | 2 | `fill.py:92` |
+| Send spacing | 45–90s | `limiter.py:13-14` |
+| Warmup ramp | 10/20/30/40 | `warmup.py:3` |
+| Bounce → degrade | 2/day | `smtp.py:132` |
+| Research cache | 30 days | `agent.py:13` |
+| Default wait between steps | 3 days | `tasks.py:169` |
+| Deactivate ratio | 0.5 × best mean | `thompson.py:15` |
+| API key token format | `csk_` + 32 url-safe bytes, SHA-256 at rest | `api/auth.py` |
+| API scopes | `read ⊂ operate ⊂ admin` (hierarchical) | `api/auth.py` |
+| `CRAFTSMAN_API_KEY` | — (dashboard's server-held key; read+operate) | web env |
+| `DASHBOARD_PASSWORD_HASH` | — (scrypt `scrypt$salt$hash`) | web env |
+| `DASHBOARD_SESSION_SECRET` | — (HMAC key for the session cookie) | web env |
+| Session cookie | httpOnly, SameSite=Lax, 7-day | `web/src/lib/session.ts` |
+| Schema management | Alembic; API runs `upgrade head` on startup | `alembic.ini`, `craftsman/migrations/` |
+
+---
+
+## 11. Enterprise-readiness gap analysis
+
+**Legend:** ✅ verified in code · ⚠️ suspected, **[needs runtime check]** · 🎯 = highest leverage.
+
+### A. Security (the biggest blockers)
+- ✅ **A1 — RESOLVED (M0.1).** Was: every endpoint open, including `DELETE /leads/{id}/erase`,
+  `POST /mailboxes` (stores SMTP creds), and `activate` (sends mail). Now: scoped API-key middleware
+  (`Authorization: Bearer`, SHA-256-hashed keys, `read`/`operate`/`admin`) on every route except
+  `/health` and `/u/{token}`; a fail-closed route audit 401s any non-allowlisted endpoint; the
+  dashboard has scrypt password login + a session-gated proxy that keeps the API key server-side;
+  `/docs` gated behind `read`; loud exposure warning in the quickstart. See `craftsman/api/auth.py`,
+  `tests/{unit,e2e,adversarial}/test_auth*`, and `plans/m0.1-auth.md`.
+- **A2 — SSRF surface in the research fetcher (⚠️ [needs runtime check]).** `research/fetch.py` GETs
+  URLs derived from a CSV-supplied company domain with redirects followed and no allowlist / no
+  private-IP guard / no scheme check. A crafted domain could target `169.254.169.254`,
+  `localhost:6379`, or internal hosts. *Fix:* scheme allowlist (https only), DNS-resolve + block
+  private/link-local ranges, disable or bound redirects.
+- **A3 — Prompt injection into the copywriter (⚠️).** Research briefs are LLM-summarized web text that
+  flow into copy. The slot-fill + validator design *should* contain this (ungrounded claims get
+  rejected), but injected text that is *genuinely present in the brief* would pass the grounding gate.
+  *Fix:* treat brief text as untrusted; test with an adversarial fixture page.
+- **A4 — CSV/formula injection & header injection (⚠️).** Lead fields from CSV reach email headers and
+  could reach re-exported CSVs (`=cmd|...`). *Fix:* sanitize on import and on any export.
+- **A5 — Secrets hygiene (partly ✅).** SMTP/IMAP passwords are Fernet-encrypted at rest (good). Audit
+  that no key/token is logged, echoed in error responses, or exposed via `/docs`.
+
+### B. Correctness / data integrity
+- 🎯 **B1 — Validator fuzzy-matches numbers (⚠️ [needs runtime check]).** See §6.5. Magnitude
+  hallucinations ($4M→$40M) may pass. *Fix:* exact/normalized numeric comparison on a separate path
+  from entity fuzzy-matching.
+- **B2 — Unseeded production RNG (✅).** `pick_arm` uses an unseeded generator; no reproducibility mode.
+- **B3 — Concurrency & idempotency of sends (⚠️ [needs runtime check]).** Per-mailbox spacing is a
+  Redis token bucket (good, cross-worker), but verify: (a) can 4 workers each pass a per-campaign cap
+  check that should fail collectively? (b) does killing a worker mid-send cause a duplicate on Celery
+  retry (`acks_late=True`)? Confirm the dedupe/idempotency happens before dispatch.
+- **B4 — Late/duplicate reply accounting (⚠️).** Verify a reply arriving after `settle_expired` marked
+  it a failure actually *undoes* the failure rather than only adding a success (double-counting risk).
+
+### C. Compliance / privacy
+- **C1 — GDPR mode is a weak heuristic (✅).** EU-TLD blocking misses EU residents on `.com`. Document
+  it honestly; don't imply full coverage.
+- 🎯 **C2 — GDPR erasure is incomplete (✅ verified).** `erase_lead` only deletes the `leads` row and
+  adds a suppression entry. It does **not** cascade to `enrollments`, `messages` (which contain the
+  prospect's reply text and email), or `unsubscribe_tokens`. With no `ON DELETE CASCADE`, deleting a
+  lead that has enrollments may also raise an IntegrityError. *Fix:* cascade or explicit multi-table
+  erase across every store holding lead-derived data (incl. research briefs that name the person, and
+  any queued Celery payloads).
+- **C3 — Deliverability guidance missing (README gap).** README says deliverability is the hard part,
+  then the quickstart never covers DKIM/SPF/DMARC. Enterprise senders need this front-and-center.
+
+### D. Reliability / observability / scale
+- ✅ **D1 — RESOLVED (M0.2).** Alembic introduced (`craftsman/migrations/`, `alembic.ini`); baseline
+  `0001` captures the full current schema incl. `api_keys` and the pgvector extension. API applies
+  `alembic upgrade head` on startup; `create_all` is dev/test/demo-only. Tests cover upgrade→head,
+  downgrade round-trip, and a no-drift guard (`alembic check`) that fails CI if a model changes
+  without a migration. See `plans/m0.2-migrations.md`.
+- **D2 — Observability.** No structured logging/metrics/tracing surfaced; no dead-letter handling for
+  exhausted Celery retries; the `error` enrollment state has no re-drive path (a rejected copy is stuck).
+- **D3 — Multi-tenancy.** Everything is single-tenant global (mailboxes, suppression, campaigns). Enterprise
+  likely needs org/workspace isolation and per-tenant rate/quota.
+- **D4 — Testing gaps (see §12).** No adversarial validator/bandit/concurrency tests; integration tests
+  silently skip without Postgres (false green); classifier only eval'd against fixtures with a real key.
+
+### E. Product / UX
+- **E1 — No auth-gated dashboard, no user model.** **E2 —** Leads page has no erase/suppress UI though the
+  API supports it. **E3 —** No campaign/variant creation UI (must use `/docs` or curl). **E4 —** No
+  dry-run/preflight mode to route a real campaign through Mailpit before going live.
+
+---
+
+## 12. Testing status
+
+- **59 tests, all passing, 0 skipped** *only when Postgres is up.* First run without Postgres shows
+  `50 passed, 9 skipped` and still exits 0 — the integration layer silently sits out ("false green").
+  Always confirm skip count is 0.
+- **Covered:** state machine, validator (basic), bandit math, scheduling, copywriter retry loop,
+  poller parsing, ICP scoring, and a Postgres integration flow (import→tick→reply→settle).
+- **Not covered (high-value to add):** adversarial validator cases (number fuzzing, casing, banned-phrase
+  evasion), bandit delayed-feedback/late-reply/attribution, send concurrency & idempotency, timezone
+  edge cases (DST, no-location), SSRF/prompt-injection, GDPR erasure completeness, and any auth (there is
+  none to test).
+- Classifier eval (`scripts/eval_classifier.py`) needs a real API key — run separately and deliberately.
+
+---
+
+## 13. Suggested enterprise roadmap (phased)
+
+1. **Security baseline (blockers):** API auth + dashboard auth (A1); SSRF guard (A2); secrets/`/docs`
+   audit (A5). Nothing ships to a real domain until these land.
+2. **Correctness of the core guarantees:** fix numeric grounding (B1); complete GDPR erasure with
+   cascades (C2); verify send idempotency & cap enforcement under concurrency (B3); seedable bandit (B2).
+3. **Operational maturity:** Alembic migrations (D1); structured logging/metrics/tracing + Celery
+   dead-letter + `error`-state re-drive (D2); DKIM/SPF/DMARC docs + dry-run mode (C3, E4).
+4. **Scale & product:** multi-tenancy/workspaces (D3); campaign/variant/erase UIs (E2/E3); adversarial
+   test suites for validator/bandit/security (D4).
+
+---
+
+## 14. Repo layout (quick reference)
+
+```
+craftsman/
+  api/          FastAPI app + routers (leads, campaigns, inbox, mailboxes, analytics, unsubscribe)
+  bandit/       thompson.py (learning loop), settle.py, simulator.py
+  compliance/   suppression.py, unsubscribe.py
+  copywriter/   fill.py, validator.py (+ banned_phrases.txt, skeletons/)
+  core/         config, db, models, schemas, crypto
+  inbox/        poller, reply_parser, classifier, pipeline
+  ingest/       csv_import, verify, adapters (orphaned)
+  llm/          client + anthropic/ollama/mock impls
+  research/     agent, fetch, prompts
+  scoring/      embeddings, icp
+  sender/       smtp, limiter, warmup
+  sequencer/    machine (state), scheduling, tick
+  workers/      celery_app, tasks
+web/            Next.js dashboard (app router; server components + a few client components)
+scripts/        seed_demo.py, eval_classifier.py, e2e_demo.py
+tests/          unit/ (mock LLM, no network) + e2e/ (real Postgres, skips if absent)
+docker-compose.yml, Dockerfile, pyproject.toml, .env.example
+```
+
+### How to run (verified working)
+```bash
+# infra
+docker compose up -d postgres redis mailpit
+# python
+python3 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+cp .env.example .env    # set LLM_PROVIDER=mock for offline
+# tests
+pytest -v              # 59 tests; ensure 0 skipped (Postgres up)
+# app
+python scripts/seed_demo.py
+uvicorn craftsman.api.app:app --port 8000        # API + /docs
+celery -A craftsman.workers.celery_app worker -Q research,generate,send,inbox,enrich,settle -l info
+celery -A craftsman.workers.celery_app beat -l info
+cd web && npm install && npm run dev             # dashboard (needs :3000 for browser actions/CORS)
+```
+Surfaces: dashboard `:3000` · API docs `:8000/docs` · Mailpit `:8025`.
+```
+```
