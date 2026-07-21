@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
@@ -60,6 +60,14 @@ def openapi_spec():
 @app.get("/docs", include_in_schema=False, dependencies=[Depends(require_scope("read"))])
 def swagger_docs():
     return get_swagger_ui_html(openapi_url="/openapi.json", title="Craftsman API")
+
+
+@app.get("/metrics", include_in_schema=False, dependencies=[Depends(require_scope("read"))])
+def metrics():
+    from craftsman.core.metrics import metrics_payload
+
+    payload, content_type = metrics_payload()
+    return Response(content=payload, media_type=content_type)
 
 
 @app.get("/health")

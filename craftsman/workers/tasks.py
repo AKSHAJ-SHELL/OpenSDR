@@ -145,10 +145,13 @@ def generate_and_send(self, enrollment_id: str):
             log.warning("copywriter rejected twice for %s", lead.email)
             return
 
+        from craftsman.core.metrics import record_rejection
+
         # pre-send checks (suppression / mailbox capacity / per-mailbox rate limit)
         try:
             mailbox = run_presend_checks(db, lead, campaign)
         except SendBlocked as e:
+            record_rejection(e.reason)
             if e.retry_in:
                 raise self.retry(countdown=e.retry_in + 1)
             if e.reason == "no_mailbox_capacity":
@@ -161,6 +164,7 @@ def generate_and_send(self, enrollment_id: str):
         # per-campaign daily cap: atomic reserve, committed immediately so the row lock
         # is not held across the SMTP send. Concurrent workers can't collectively exceed.
         if not reserve_campaign_slot(db, campaign):
+            record_rejection("campaign_daily_cap")
             raise self.retry(countdown=3600)  # cap reached; resets at midnight
         db.commit()
 
