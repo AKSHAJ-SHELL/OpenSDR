@@ -1,14 +1,25 @@
 """Suppression list: the one check nothing may skip.
 
 Checked at generation time AND again at send time.
+Also home to GDPR erasure — the multi-store cascade that removes a person.
 """
 
+import re
 import secrets
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from craftsman.core.models import Lead, SuppressionEntry, UnsubscribeToken
+from craftsman.core.models import (
+    AuditLog,
+    Company,
+    Enrollment,
+    Lead,
+    Message,
+    ReviewQueueItem,
+    SuppressionEntry,
+    UnsubscribeToken,
+)
 
 EU_TLDS = {
     ".at", ".be", ".bg", ".hr", ".cy", ".cz", ".dk", ".ee", ".fi", ".fr", ".de",
@@ -45,9 +56,113 @@ def make_unsubscribe_token(db: Session, email: str) -> str:
     return token
 
 
+def _identifiers(lead: Lead) -> list[str]:
+    """The strings that identify this person in free text. Names shorter than
+    3 chars are skipped (initials would redact half the alphabet); false
+    positives only redact a word in a cached brief, false negatives retain PII."""
+    ids = [lead.email]
+    first = (lead.first_name or "").strip()
+    last = (lead.last_name or "").strip()
+    if first and last:
+        ids.append(f"{first} {last}")
+    for name in (first, last):
+        if len(name) >= 3:
+            ids.append(name)
+    return ids
+
+
+def scrub_pii(obj, identifiers: list[str]):
+    """Recursively replace identifier occurrences with '[redacted]' in any
+    nested dict/list/str structure. Returns (scrubbed_copy, changed)."""
+    if isinstance(obj, str):
+        out = obj
+        for ident in identifiers:
+            out = re.sub(re.escape(ident), "[redacted]", out, flags=re.IGNORECASE)
+        return out, out != obj
+    if isinstance(obj, dict):
+        changed = False
+        new = {}
+        for k, v in obj.items():
+            new[k], c = scrub_pii(v, identifiers)
+            changed = changed or c
+        return new, changed
+    if isinstance(obj, (list, tuple)):
+        changed = False
+        new = []
+        for v in obj:
+            sv, c = scrub_pii(v, identifiers)
+            new.append(sv)
+            changed = changed or c
+        return new, changed
+    return obj, False
+
+
 def erase_lead(db: Session, lead: Lead) -> None:
-    """GDPR data-subject erasure: hard-delete the lead and suppress the address
-    so it can never be re-imported."""
+    """GDPR data-subject erasure: a multi-store cascade, then permanent suppression.
+
+    Deletes everything that identifies the person: review-queue items, messages
+    (inbound reply text is prospect-authored PII), enrollments, unsubscribe tokens,
+    and the lead row. Audit-log rows are KEPT but anonymized (enrollment link
+    severed, identifiers scrubbed from detail) — anonymized rows no longer relate
+    to an identifiable person, and the aggregate history stays useful. The cached
+    company research brief is scrubbed of person mentions; company facts stay.
+    The suppression entry survives deliberately: it IS the do-not-contact record.
+
+    Celery payloads carry only IDs, so queued tasks referencing the erased lead
+    no-op once these rows are gone (asserted by tests/e2e/test_erasure.py).
+    """
     email = lead.email
+    identifiers = _identifiers(lead)
+
+    enrollment_ids = list(
+        db.scalars(select(Enrollment.id).where(Enrollment.lead_id == lead.id)).all()
+    )
+    if enrollment_ids:
+        message_ids = list(
+            db.scalars(
+                select(Message.id).where(Message.enrollment_id.in_(enrollment_ids))
+            ).all()
+        )
+
+        review_conds = [ReviewQueueItem.enrollment_id.in_(enrollment_ids)]
+        if message_ids:
+            review_conds.append(ReviewQueueItem.message_id.in_(message_ids))
+        for item in db.scalars(select(ReviewQueueItem).where(or_(*review_conds))).all():
+            db.delete(item)
+
+        # keep the audit rows, sever the person: link nulled, detail scrubbed
+        for audit in db.scalars(
+            select(AuditLog).where(AuditLog.enrollment_id.in_(enrollment_ids))
+        ).all():
+            audit.enrollment_id = None
+            if audit.detail is not None:
+                audit.detail, _ = scrub_pii(audit.detail, identifiers)
+            db.add(audit)
+
+        for msg in db.scalars(
+            select(Message).where(Message.enrollment_id.in_(enrollment_ids))
+        ).all():
+            db.delete(msg)
+        for enr in db.scalars(
+            select(Enrollment).where(Enrollment.id.in_(enrollment_ids))
+        ).all():
+            db.delete(enr)
+
+    for token in db.scalars(
+        select(UnsubscribeToken).where(UnsubscribeToken.lead_email == email.lower())
+    ).all():
+        db.delete(token)
+
+    # scrub the cached research brief; deliberately no re-fetch (a re-scrape of a
+    # team/news page could pull the person's name right back into the cache)
+    if lead.company_id is not None:
+        company = db.get(Company, lead.company_id)
+        if company is not None and company.research_brief is not None:
+            scrubbed, changed = scrub_pii(company.research_brief, identifiers)
+            if changed:
+                company.research_brief = scrubbed
+                db.add(company)
+
     db.delete(lead)
+    db.flush()  # cascade order is explicit; surface FK problems here, not at commit
     suppress(db, email, reason="gdpr")

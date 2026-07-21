@@ -164,6 +164,15 @@ the models and migrations drift apart.
 
 One-click unsubscribe (RFC 8058 `List-Unsubscribe-Post`), physical address in every footer (CAN-SPAM), permanent suppression list checked at generation *and* send time, GDPR mode that blocks EU-TLD enrollment for non-opt-in lists, and `DELETE /leads/{id}/erase` for data-subject requests. Deliverability guardrails (verification, warmup ramps, rate jitter, bounce-driven mailbox degradation) are on by default so self-hosters don't torch their domains.
 
+**What erasure actually deletes:** the lead row, enrollments, all messages (including the
+prospect's reply text), review-queue items, and unsubscribe tokens; the cached company
+research brief is scrubbed of the person's name and email (company facts stay). Audit-log
+rows are kept but anonymized — the enrollment link is severed and identifiers are scrubbed,
+so they no longer relate to an identifiable person. The suppression entry deliberately
+survives: it is the do-not-contact record that keeps the address from ever being re-imported.
+Queued background jobs reference database IDs only, so a job queued before erasure is a
+verified no-op after it.
+
 ## License
 
 AGPL-3.0. If you host a modified Craftsman as a service, you share your changes. That's the point.

@@ -162,8 +162,9 @@ path (used by tests and the seed scripts). *(M0.2)*
 **Relationship spine:** Company 1─* Lead 1─* Enrollment *─1 Campaign 1─* SequenceStep 1─* Variant.
 Message *─1 Enrollment and *─1 Variant (this is how a reply is attributed to the arm that earned it).
 
-> **Enterprise flag:** no child FK declares `ON DELETE CASCADE`. This directly breaks GDPR erasure
-> (§11-C2) and risks integrity errors when deleting a lead that has enrollments.
+> **Note (M0.4):** no child FK declares `ON DELETE CASCADE` — deliberately kept that way. Only the
+> GDPR path (`erase_lead`) performs ordered multi-table deletion; the FK constraints keep protecting
+> every other code path from accidental lead deletion. See §11-C2 (resolved).
 
 ---
 
@@ -308,7 +309,7 @@ single highest-severity gap for enterprise use.
 |---|---|---|---|
 | POST | `/leads/import` | CSV import → leads + enqueue verify | ✅ |
 | GET | `/leads` | list leads (`score_gte`, `status`, `limit`) | |
-| DELETE | `/leads/{id}/erase` | GDPR erase (⚠️ incomplete — see §11-C2) | ✅ |
+| DELETE | `/leads/{id}/erase` | GDPR erase — full multi-store cascade (M0.4, §11-C2) | ✅ |
 | GET/GET | `/campaigns`, `/campaigns/{id}` | list / fetch | |
 | POST | `/campaigns` | create campaign + steps | ✅ |
 | POST | `/campaigns/{id}/variants` | add copy variant (bandit arm) | ✅ |
@@ -438,12 +439,14 @@ change these thresholds to make a test pass** — they encode product behavior.
 ### C. Compliance / privacy
 - **C1 — GDPR mode is a weak heuristic (✅).** EU-TLD blocking misses EU residents on `.com`. Document
   it honestly; don't imply full coverage.
-- 🎯 **C2 — GDPR erasure is incomplete (✅ verified).** `erase_lead` only deletes the `leads` row and
-  adds a suppression entry. It does **not** cascade to `enrollments`, `messages` (which contain the
-  prospect's reply text and email), or `unsubscribe_tokens`. With no `ON DELETE CASCADE`, deleting a
-  lead that has enrollments may also raise an IntegrityError. *Fix:* cascade or explicit multi-table
-  erase across every store holding lead-derived data (incl. research briefs that name the person, and
-  any queued Celery payloads).
+- ✅ **C2 — RESOLVED (M0.4).** The IntegrityError was confirmed (erase failed for any enrolled
+  lead), then fixed: `erase_lead` is now an ordered multi-store cascade — review-queue items,
+  messages (inbound reply PII), enrollments, unsubscribe tokens, and the lead row are deleted;
+  audit rows are KEPT but anonymized (enrollment link nulled, identifiers scrubbed — human
+  decision); the cached research brief is scrubbed of person mentions (company facts stay, no
+  re-fetch so a team-page scrape can't reintroduce the name); suppression survives as the
+  do-not-contact record. Celery payloads are IDs only — queued tasks no-op post-erase (tested).
+  See `plans/m0.4-erasure.md`, `findings/05-erasure.md`, `tests/e2e/test_erasure.py`.
 - **C3 — Deliverability guidance missing (README gap).** README says deliverability is the hard part,
   then the quickstart never covers DKIM/SPF/DMARC. Enterprise senders need this front-and-center.
 
