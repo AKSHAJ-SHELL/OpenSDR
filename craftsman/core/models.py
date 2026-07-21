@@ -239,6 +239,27 @@ class UnsubscribeToken(Base):
     )
 
 
+class DeadLetter(Base):
+    """A Celery task that failed terminally (retries exhausted). Redis has no native
+    dead-letter queue, so we record failures here for inspection and manual re-drive."""
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    task_name: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str | None] = mapped_column(Text)
+    args: Mapped[list | None] = mapped_column(JSONB)
+    kwargs: Mapped[dict | None] = mapped_column(JSONB)
+    exception: Mapped[str | None] = mapped_column(Text)
+    traceback: Mapped[str | None] = mapped_column(Text)
+    # the enrollment the task referenced, if any (plain id — no FK, so erasure and
+    # enrollment deletion never trip over dead-letter rows)
+    enrollment_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
 class ApiKey(Base):
     """A hashed, scoped API key. The plaintext token is shown once at creation;
     only its SHA-256 digest is stored here."""

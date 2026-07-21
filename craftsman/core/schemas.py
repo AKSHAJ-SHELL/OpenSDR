@@ -205,3 +205,14 @@ class ApiKeyCreated(ApiKeyOut):
     """Returned exactly once, on creation: includes the plaintext token."""
 
     token: str
+
+
+class DeadLetterOut(BaseModel):
+    id: uuid.UUID
+    task_name: str
+    task_id: str | None = None
+    exception: str | None = None
+    enrollment_id: str | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}

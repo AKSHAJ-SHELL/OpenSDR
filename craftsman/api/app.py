@@ -6,7 +6,16 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 
 from craftsman.api.auth import require_scope
-from craftsman.api.routers import analytics, campaigns, inbox, keys, leads, mailboxes, unsubscribe
+from craftsman.api.routers import (
+    analytics,
+    campaigns,
+    inbox,
+    keys,
+    leads,
+    mailboxes,
+    ops,
+    unsubscribe,
+)
 
 
 @asynccontextmanager
@@ -49,6 +58,7 @@ app.include_router(inbox.router)
 app.include_router(mailboxes.router)
 app.include_router(analytics.router)
 app.include_router(keys.router)
+app.include_router(ops.router)
 app.include_router(unsubscribe.router)
 
 

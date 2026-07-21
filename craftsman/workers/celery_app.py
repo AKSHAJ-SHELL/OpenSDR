@@ -1,9 +1,12 @@
+import logging
+
 from celery import Celery
-from celery.signals import setup_logging
+from celery.signals import setup_logging, task_failure
 
 from craftsman.core.config import get_settings
 
 settings = get_settings()
+log = logging.getLogger(__name__)
 
 
 @setup_logging.connect
@@ -13,6 +16,30 @@ def _configure_worker_logging(**_kwargs):
     from craftsman.core.logging import configure_logging
 
     configure_logging()
+
+
+@task_failure.connect
+def _record_dead_letter(sender=None, task_id=None, exception=None, args=None,
+                        kwargs=None, einfo=None, **_):
+    """Record a terminally-failed task (retries raise Retry, not a failure, so this
+    fires only after retries are exhausted). Best-effort — never mask the real error."""
+    from craftsman.core.db import session_scope
+    from craftsman.core.models import DeadLetter
+
+    try:
+        with session_scope() as db:
+            db.add(DeadLetter(
+                task_name=getattr(sender, "name", None) or "unknown",
+                task_id=task_id,
+                args=list(args) if args else None,
+                kwargs=dict(kwargs) if kwargs else None,
+                exception=repr(exception) if exception is not None else None,
+                traceback=str(einfo) if einfo is not None else None,
+                # our tasks take enrollment_id / lead_id as the first positional arg
+                enrollment_id=str(args[0]) if args else None,
+            ))
+    except Exception as e:  # noqa: BLE001
+        log.warning("failed to record dead letter for %s: %s", getattr(sender, "name", "?"), e)
 
 app = Celery(
     "craftsman",
