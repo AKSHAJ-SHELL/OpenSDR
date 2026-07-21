@@ -77,8 +77,25 @@ def run_migrations() -> None:
 
     from alembic import command
     from alembic.config import Config
+    from sqlalchemy import inspect
 
     root = Path(__file__).resolve().parents[2]  # repo root (contains alembic.ini)
     cfg = Config(str(root / "alembic.ini"))
+
+    # Guard the "existing schema, no Alembic stamp" case (a DB built by create_all before
+    # migrations existed). Blindly upgrading re-creates existing tables → a cryptic
+    # DuplicateTable. Fail with an actionable message instead.
+    engine = get_engine()
+    with engine.connect() as conn:
+        insp = inspect(conn)
+        if not insp.has_table("alembic_version") and insp.has_table("campaigns"):
+            raise RuntimeError(
+                "Database has tables but no Alembic version stamp — it was built by "
+                "create_all (dev/demo), not migrations, so migrations can't run against "
+                "it. For a dev/demo DB, drop and recreate it (the data is regenerable) and "
+                "retry. If you are certain its schema already matches the latest models, "
+                "adopt it with:  alembic stamp head"
+            )
+
     # env.py reads the URL from Settings, so we don't set it here.
     command.upgrade(cfg, "head")
