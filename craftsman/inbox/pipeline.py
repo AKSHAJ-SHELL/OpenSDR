@@ -40,12 +40,18 @@ async def handle_inbound(
 ) -> Message | None:
     """Full inbound flow for one email. Returns the stored inbound Message, or None
     if it couldn't be matched to a thread we own."""
+    from craftsman.core.logging import bind_log_context
+
     outbound = match_thread(db, inbound)
     if outbound is None:
         log.info("unmatched inbound from %s — ignoring", inbound.from_addr)
         return None
 
     enrollment = db.get(Enrollment, outbound.enrollment_id)
+    bind_log_context(
+        enrollment_id=str(outbound.enrollment_id) if outbound.enrollment_id else None,
+        message_id=str(outbound.id),
+    )
     fresh_text = strip_quoted(inbound.body)
     classification = await classify_reply(llm, fresh_text or inbound.body)
 

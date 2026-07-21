@@ -45,12 +45,15 @@ def research_enrollment(self, enrollment_id: str):
     from craftsman.sequencer.machine import Event
     from craftsman.sequencer.tick import apply_event
 
+    from craftsman.core.logging import bind_log_context
+
     with session_scope() as db:
         enrollment = db.get(Enrollment, enrollment_id)
         if enrollment is None or enrollment.state != "researching":
             return
         lead = db.get(Lead, enrollment.lead_id)
         company = db.get(Company, lead.company_id)
+        bind_log_context(enrollment_id=str(enrollment.id), lead_id=str(lead.id))
         try:
             _run(research_company(db, company, get_llm()))
             apply_event(db, enrollment, Event.RESEARCH_DONE)
@@ -84,6 +87,8 @@ def generate_and_send(self, enrollment_id: str):
     from craftsman.sequencer.machine import Event
     from craftsman.sequencer.tick import apply_event, schedule_next_step
 
+    from craftsman.core.logging import bind_log_context
+
     with session_scope() as db:
         enrollment = db.get(Enrollment, enrollment_id)
         if enrollment is None or enrollment.state != "ready":
@@ -91,6 +96,7 @@ def generate_and_send(self, enrollment_id: str):
         lead = db.get(Lead, enrollment.lead_id)
         campaign = enrollment.campaign
         company = db.get(Company, lead.company_id)
+        bind_log_context(enrollment_id=str(enrollment.id), lead_id=str(lead.id))
 
         # generation-time suppression re-check
         if is_suppressed(db, lead.email):

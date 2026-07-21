@@ -1,8 +1,18 @@
 from celery import Celery
+from celery.signals import setup_logging
 
 from craftsman.core.config import get_settings
 
 settings = get_settings()
+
+
+@setup_logging.connect
+def _configure_worker_logging(**_kwargs):
+    """Use our JSON logging instead of Celery's default (connecting to this signal
+    tells Celery not to hijack the root logger)."""
+    from craftsman.core.logging import configure_logging
+
+    configure_logging()
 
 app = Celery(
     "craftsman",
