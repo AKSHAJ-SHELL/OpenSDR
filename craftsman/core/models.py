@@ -165,6 +165,9 @@ class Message(Base):
     bandit_outcome: Mapped[str | None] = mapped_column(Text)  # pending|success|failure
     outcome_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )  # when the row (incl. an outbound claim) was created — drives the unsent-claim sweep
 
     enrollment: Mapped[Enrollment | None] = relationship()
     variant: Mapped[Variant | None] = relationship()

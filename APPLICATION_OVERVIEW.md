@@ -400,6 +400,9 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Per-campaign cap | atomic reserve/release on `campaigns.sent_today`; reset daily | `sender/smtp.py`, `reset_daily_counters` |
 | Send idempotency | claim-before-deliver; partial unique index `uq_outbound_step` | `workers/tasks.py`, migration `0002` |
 | `BANDIT_SEED` | unset (fresh RNG); set = reproducible stream for sims/CI | `bandit/thompson.py get_bandit_rng` |
+| `LOG_LEVEL` | INFO; JSON logs with lead/enrollment/message correlation ids | `core/logging.py` |
+| `/metrics` | Prometheus, read-scope gated, pull-based from Postgres+Redis | `core/metrics.py`, `api/app.py` |
+| `redrive_unsent_after_minutes` | 15; unsent-claim sweep age cutoff | `core/config.py`, `sequencer/redrive.py` |
 
 ---
 
@@ -472,8 +475,14 @@ change these thresholds to make a test pass** — they encode product behavior.
   `alembic upgrade head` on startup; `create_all` is dev/test/demo-only. Tests cover upgrade→head,
   downgrade round-trip, and a no-drift guard (`alembic check`) that fails CI if a model changes
   without a migration. See `plans/m0.2-migrations.md`.
-- **D2 — Observability.** No structured logging/metrics/tracing surfaced; no dead-letter handling for
-  exhausted Celery retries; the `error` enrollment state has no re-drive path (a rejected copy is stuck).
+- ✅ **D2 — RESOLVED (M0.6b).** Structured JSON logging with correlation ids
+  (lead/enrollment/message) via a contextvar filter; Prometheus `/metrics` (read-gated,
+  pull-based from Postgres+Redis: enrollments/leads/replies/outbound/review depth, queue
+  depths, send rejections, dead-letter count); a `dead_letters` table fed by the Celery
+  `task_failure` signal with a `GET /dead-letters` view; and a re-drive path — the review
+  action `POST /inbox/review/{id}/action` (retry/skip/kill) plus a `redrive_unsent` beat
+  sweep that unsticks crash-orphaned claims. See `plans/m0.6b-observability.md`,
+  `findings/08-observability.md`.
 - **D3 — Multi-tenancy.** Everything is single-tenant global (mailboxes, suppression, campaigns). Enterprise
   likely needs org/workspace isolation and per-tenant rate/quota.
 - **D4 — Testing gaps (see §12).** No adversarial validator/bandit/concurrency tests; integration tests

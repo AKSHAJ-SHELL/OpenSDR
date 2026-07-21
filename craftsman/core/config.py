@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # Classifier
     classifier_confidence_threshold: float = 0.7
 
+    # Re-drive: an outbound claim with sent_at still NULL after this many minutes is a
+    # crash residual — the sweep deletes it, frees the campaign slot, and re-readies the lead.
+    redrive_unsent_after_minutes: int = 15
+
     # Notifications
     slack_webhook_url: str = ""
 

@@ -293,6 +293,21 @@ def settle_bandit():
 
 
 @app.task
+def redrive_unsent():
+    """Periodic sweep: re-drive outbound claims left unsent by a hard crash."""
+    from craftsman.core.config import get_settings
+    from craftsman.sequencer.redrive import redrive_unsent_claims
+
+    with session_scope() as db:
+        n = redrive_unsent_claims(
+            db, after_minutes=get_settings().redrive_unsent_after_minutes
+        )
+    if n:
+        log.info("redrive_unsent swept %d stuck claim(s)", n)
+    return n
+
+
+@app.task
 def reset_daily_counters():
     from sqlalchemy import update
 

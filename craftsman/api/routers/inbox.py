@@ -72,11 +72,41 @@ def review_queue(limit: int = 50, db: Session = Depends(get_db)):
         {
             "id": str(r.id),
             "kind": r.kind,
+            "enrollment_id": str(r.enrollment_id) if r.enrollment_id else None,
             "payload": r.payload,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
         for r in rows
     ]
+
+
+class RedriveAction(BaseModel):
+    action: str  # retry | skip | kill
+
+
+@router.post(
+    "/review/{item_id}/action",
+    response_model=dict,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def review_action(item_id: uuid.UUID, payload: RedriveAction, db: Session = Depends(get_db)):
+    """Resolve a review item and re-drive its enrollment (retry / skip / kill)."""
+    from craftsman.sequencer.redrive import REDRIVE_ACTIONS, redrive_enrollment
+
+    if payload.action not in REDRIVE_ACTIONS:
+        raise HTTPException(400, f"action must be one of {REDRIVE_ACTIONS}")
+    item = db.get(ReviewQueueItem, item_id)
+    if item is None:
+        raise HTTPException(404, "review item not found")
+
+    new_state = None
+    if item.enrollment_id is not None:
+        enrollment = db.get(Enrollment, item.enrollment_id)
+        if enrollment is not None:
+            new_state = redrive_enrollment(db, enrollment, payload.action)
+    item.resolved = True
+    db.add(item)
+    return {"resolved": True, "action": payload.action, "new_state": new_state}
 
 
 class Reclassify(BaseModel):
