@@ -73,6 +73,11 @@ class Campaign(Base):
     value_prop: Mapped[str] = mapped_column(Text, nullable=False)
     sender_persona: Mapped[dict | None] = mapped_column(JSONB)
     daily_cap: Mapped[int] = mapped_column(Integer, default=50)
+    # atomic per-day send counter (reserve/release); reset daily. The cap gate reads
+    # THIS, not a message count, so concurrent workers can't collectively over-send.
+    sent_today: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     status: Mapped[str] = mapped_column(Text, default="draft")  # draft|active|paused|done
     icp_embedding: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIM))
 
@@ -133,11 +138,24 @@ class Enrollment(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        # Idempotency: at most one outbound message per (enrollment, step). The send
+        # path claims this row BEFORE delivering, so an acks_late retry hits the
+        # constraint and skips rather than sending a duplicate.
+        Index(
+            "uq_outbound_step",
+            "enrollment_id",
+            "step_order",
+            unique=True,
+            postgresql_where=text("direction = 'outbound'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     enrollment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("enrollments.id"))
     variant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("variants.id"))
     direction: Mapped[str] = mapped_column(Text, nullable=False)  # outbound|inbound
+    step_order: Mapped[int | None] = mapped_column(Integer)  # sequence step, outbound only
     mailbox_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("mailboxes.id"))
     subject: Mapped[str | None] = mapped_column(Text)
     body: Mapped[str | None] = mapped_column(Text)

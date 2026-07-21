@@ -397,6 +397,9 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `DASHBOARD_SESSION_SECRET` | — (HMAC key for the session cookie) | web env |
 | Session cookie | httpOnly, SameSite=Lax, 7-day | `web/src/lib/session.ts` |
 | Schema management | Alembic; API runs `upgrade head` on startup | `alembic.ini`, `craftsman/migrations/` |
+| Per-campaign cap | atomic reserve/release on `campaigns.sent_today`; reset daily | `sender/smtp.py`, `reset_daily_counters` |
+| Send idempotency | claim-before-deliver; partial unique index `uq_outbound_step` | `workers/tasks.py`, migration `0002` |
+| `BANDIT_SEED` | unset (fresh RNG); set = reproducible stream for sims/CI | `bandit/thompson.py get_bandit_rng` |
 
 ---
 
@@ -434,11 +437,18 @@ change these thresholds to make a test pass** — they encode product behavior.
   path after normalization (Decimal-expanded magnitudes, stripped separators/symbols, percent
   strictness), fully separate from entity fuzzy-matching. See §6.5, `plans/m0.3-validator.md`,
   `findings/04-validator.md`.
-- **B2 — Unseeded production RNG (✅).** `pick_arm` uses an unseeded generator; no reproducibility mode.
-- **B3 — Concurrency & idempotency of sends (⚠️ [needs runtime check]).** Per-mailbox spacing is a
-  Redis token bucket (good, cross-worker), but verify: (a) can 4 workers each pass a per-campaign cap
-  check that should fail collectively? (b) does killing a worker mid-send cause a duplicate on Celery
-  retry (`acks_late=True`)? Confirm the dedupe/idempotency happens before dispatch.
+- ✅ **B2 — RESOLVED (M0.6a).** `get_bandit_rng()` returns a cached, seeded generator when
+  `BANDIT_SEED` is set (a deterministic stream for sims/CI) and a fresh generator otherwise.
+- ✅ **B3 — RESOLVED (M0.6a).** Both races confirmed and fixed. (a) The per-campaign cap was
+  read-then-act (4 workers all pass at 49/50); it's now an atomic `UPDATE … WHERE sent_today < cap
+  RETURNING` reserve/release on a new `campaigns.sent_today` counter — a real threaded test proves
+  exactly `cap` reservations succeed under contention. (b) With `acks_late=True` a killed worker
+  re-sent; the task now **claims** the outbound row (partial unique index on
+  `messages(enrollment_id, step_order) WHERE direction='outbound'`) and commits it **before**
+  delivering, so a redelivery hits IntegrityError and skips — never-double, may-rarely-skip on a
+  hard crash. Per-mailbox spacing stays the Redis token bucket (documented as cross-worker).
+  *(Re-driving genuinely-unsent claims — rows stuck `sent_at IS NULL` — is 0.6b's re-drive work.)*
+  See `plans/m0.6a-concurrency.md`, `findings/07-concurrency.md`.
 - **B4 — Late/duplicate reply accounting (⚠️).** Verify a reply arriving after `settle_expired` marked
   it a failure actually *undoes* the failure rather than only adding a success (double-counting risk).
 

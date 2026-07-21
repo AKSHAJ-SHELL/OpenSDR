@@ -65,7 +65,7 @@ def research_enrollment(self, enrollment_id: str):
 
 @app.task(bind=True, max_retries=3)
 def generate_and_send(self, enrollment_id: str):
-    import numpy as np
+    from sqlalchemy.exc import IntegrityError
 
     from craftsman.bandit.thompson import Arm, pick_arm
     from craftsman.compliance.suppression import is_suppressed
@@ -77,6 +77,8 @@ def generate_and_send(self, enrollment_id: str):
         build_email,
         deliver,
         last_outbound_in_thread,
+        release_campaign_slot,
+        reserve_campaign_slot,
         run_presend_checks,
     )
     from craftsman.sequencer.machine import Event
@@ -110,7 +112,7 @@ def generate_and_send(self, enrollment_id: str):
             return
 
         arms = [Arm(id=str(v.id), alpha=v.alpha, beta=v.beta) for v in variants]
-        chosen_arm = pick_arm(arms, rng=np.random.default_rng())
+        chosen_arm = pick_arm(arms)  # rng from get_bandit_rng() (seedable via BANDIT_SEED)
         variant = next(v for v in variants if str(v.id) == chosen_arm.id)
 
         brief = ResearchBrief.model_validate(company.research_brief or {})
@@ -137,50 +139,81 @@ def generate_and_send(self, enrollment_id: str):
             log.warning("copywriter rejected twice for %s", lead.email)
             return
 
+        # pre-send checks (suppression / mailbox capacity / per-mailbox rate limit)
         try:
             mailbox = run_presend_checks(db, lead, campaign)
         except SendBlocked as e:
             if e.retry_in:
                 raise self.retry(countdown=e.retry_in + 1)
-            if e.reason in ("campaign_daily_cap", "no_mailbox_capacity"):
+            if e.reason == "no_mailbox_capacity":
                 raise self.retry(countdown=3600)
             apply_event(db, enrollment, Event.UNSUBSCRIBE, detail={"at": "send", "reason": e.reason})
             return
 
-        prev = last_outbound_in_thread(db, enrollment.id)
-        prepared = PreparedEmail(subject=copy.subject, body=copy.body, to_email=lead.email)
-        if prev is not None and prev.smtp_message_id:
-            # bumps thread into the same conversation, keep original subject
-            prepared = PreparedEmail(
-                subject=f"Re: {prev.subject}" if not prev.subject.startswith("Re:") else prev.subject,
-                body=copy.body,
-                to_email=lead.email,
-            )
-            email_msg, message_id = build_email(
-                db=db, mailbox=mailbox, lead=lead, prepared=prepared,
-                in_reply_to=prev.smtp_message_id, references=[prev.smtp_message_id],
-            )
-        else:
-            email_msg, message_id = build_email(db=db, mailbox=mailbox, lead=lead, prepared=prepared)
+        campaign_id = campaign.id
 
-        _run(deliver(mailbox, email_msg))
+        # per-campaign daily cap: atomic reserve, committed immediately so the row lock
+        # is not held across the SMTP send. Concurrent workers can't collectively exceed.
+        if not reserve_campaign_slot(db, campaign):
+            raise self.retry(countdown=3600)  # cap reached; resets at midnight
+        db.commit()
+
+        prev = last_outbound_in_thread(db, enrollment.id)
+        if prev is not None and prev.smtp_message_id and prev.subject:
+            subject = prev.subject if prev.subject.startswith("Re:") else f"Re: {prev.subject}"
+        else:
+            subject = copy.subject
+        prepared = PreparedEmail(subject=subject, body=copy.body, to_email=lead.email)
 
         now = datetime.now(timezone.utc)
         wait_days = step.wait_days if step else 3
-        db.add(
-            Message(
-                enrollment_id=enrollment.id,
-                variant_id=variant.id,
-                direction="outbound",
-                mailbox_id=mailbox.id,
-                subject=prepared.subject,
-                body=prepared.body,
-                smtp_message_id=message_id,
-                bandit_outcome="pending",
-                outcome_deadline=now + timedelta(days=wait_days),
-                sent_at=now,
-            )
+
+        # Idempotency claim: insert the outbound row (message_id/sent_at still NULL)
+        # BEFORE any network I/O. The partial unique index on (enrollment_id,
+        # step_order) makes an acks_late redelivery trip IntegrityError here and skip,
+        # so a worker killed mid-send never produces a duplicate email.
+        claim = Message(
+            enrollment_id=enrollment.id,
+            variant_id=variant.id,
+            direction="outbound",
+            step_order=step_order,
+            mailbox_id=mailbox.id,
+            subject=prepared.subject,
+            body=prepared.body,
+            bandit_outcome="pending",
+            outcome_deadline=now + timedelta(days=wait_days),
         )
+        db.add(claim)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()  # this step was already sent by a prior attempt
+            release_campaign_slot(db, campaign_id)  # give back the slot we just reserved
+            db.commit()
+            log.info("duplicate send suppressed: enrollment %s step %s", enrollment_id, step_order)
+            return
+        db.commit()  # claim durable before we hit the wire
+
+        in_reply_to = prev.smtp_message_id if (prev and prev.smtp_message_id) else None
+        refs = [in_reply_to] if in_reply_to else None
+        email_msg, message_id = build_email(
+            db=db, mailbox=mailbox, lead=lead, prepared=prepared,
+            in_reply_to=in_reply_to, references=refs,
+        )
+        try:
+            _run(deliver(mailbox, email_msg))
+        except Exception:
+            # In-process failure means it did NOT send — drop the claim and free the
+            # slot so the retry re-sends cleanly. (Only a hard crash leaves a stuck claim.)
+            db.delete(claim)
+            release_campaign_slot(db, campaign_id)
+            db.commit()
+            raise self.retry(countdown=60)
+
+        # finalize the claimed row and advance the sequence
+        claim.smtp_message_id = message_id
+        claim.sent_at = now
+        db.add(claim)
         mailbox.sent_today += 1
         db.add(mailbox)
         enrollment.current_step = step_order  # record which step was actually sent
@@ -251,6 +284,10 @@ def settle_bandit():
 
 @app.task
 def reset_daily_counters():
+    from sqlalchemy import update
+
+    from craftsman.core.models import Campaign
+
     with session_scope() as db:
         for mailbox in db.scalars(select(Mailbox)).all():
             mailbox.sent_today = 0
@@ -260,3 +297,5 @@ def reset_daily_counters():
             if mailbox.warmup_stage < 4:
                 mailbox.warmup_stage += 1
             db.add(mailbox)
+        # zero the per-campaign send counters used by the atomic cap reserve
+        db.execute(update(Campaign).values(sent_today=0))

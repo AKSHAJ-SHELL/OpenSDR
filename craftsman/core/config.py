@@ -40,6 +40,9 @@ class Settings(BaseSettings):
 
     # Bandit
     bandit_deactivate_min_trials: int = 30
+    # Reproducibility knob for sims/CI: when set, pick_arm draws from a deterministic
+    # stream. Leave UNSET in multi-worker prod (every process would seed identically).
+    bandit_seed: int | None = None
 
     # Classifier
     classifier_confidence_threshold: float = 0.7
