@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.core.crypto import encrypt
 from craftsman.core.models import Mailbox
@@ -12,7 +13,7 @@ from craftsman.core.schemas import MailboxCreate, MailboxOut, MailboxUpdate
 router = APIRouter(prefix="/mailboxes", tags=["mailboxes"])
 
 
-@router.post("", response_model=MailboxOut)
+@router.post("", response_model=MailboxOut, dependencies=[Depends(require_scope("admin"))])
 def add_mailbox(payload: MailboxCreate, db: Session = Depends(get_db)):
     imap_host = (payload.imap_host or "").strip() or None
     box = Mailbox(
@@ -33,7 +34,9 @@ def add_mailbox(payload: MailboxCreate, db: Session = Depends(get_db)):
     return box
 
 
-@router.patch("/{mailbox_id}", response_model=MailboxOut)
+@router.patch(
+    "/{mailbox_id}", response_model=MailboxOut, dependencies=[Depends(require_scope("admin"))]
+)
 def update_mailbox(
     mailbox_id: uuid.UUID, payload: MailboxUpdate, db: Session = Depends(get_db)
 ):
@@ -75,6 +78,6 @@ def update_mailbox(
     return box
 
 
-@router.get("", response_model=list[MailboxOut])
+@router.get("", response_model=list[MailboxOut], dependencies=[Depends(require_scope("read"))])
 def list_mailboxes(db: Session = Depends(get_db)):
     return list(db.scalars(select(Mailbox)).all())

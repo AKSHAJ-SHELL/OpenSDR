@@ -1,9 +1,12 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import JSONResponse
 
-from craftsman.api.routers import analytics, campaigns, inbox, leads, mailboxes, unsubscribe
+from craftsman.api.auth import require_scope
+from craftsman.api.routers import analytics, campaigns, inbox, keys, leads, mailboxes, unsubscribe
 
 
 @asynccontextmanager
@@ -14,11 +17,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# docs/openapi are disabled here and re-exposed below behind the `read` scope, so the
+# API surface is not enumerable without a key.
 app = FastAPI(
     title="Craftsman",
     description="Open-source AI SDR with a Thompson-sampling learning loop.",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.add_middleware(
@@ -37,7 +45,18 @@ app.include_router(campaigns.router)
 app.include_router(inbox.router)
 app.include_router(mailboxes.router)
 app.include_router(analytics.router)
+app.include_router(keys.router)
 app.include_router(unsubscribe.router)
+
+
+@app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(require_scope("read"))])
+def openapi_spec():
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False, dependencies=[Depends(require_scope("read"))])
+def swagger_docs():
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="Craftsman API")
 
 
 @app.get("/health")

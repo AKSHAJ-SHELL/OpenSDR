@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.core.config import get_settings
 from craftsman.core.models import Campaign, Enrollment, Lead, SequenceStep, Variant
@@ -19,12 +20,12 @@ from craftsman.core.schemas import (
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 
-@router.get("", response_model=list[CampaignOut])
+@router.get("", response_model=list[CampaignOut], dependencies=[Depends(require_scope("read"))])
 def list_campaigns(db: Session = Depends(get_db)):
     return list(db.scalars(select(Campaign).order_by(Campaign.name)).all())
 
 
-@router.get("/{campaign_id}", response_model=CampaignOut)
+@router.get("/{campaign_id}", response_model=CampaignOut, dependencies=[Depends(require_scope("read"))])
 def get_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
@@ -32,7 +33,7 @@ def get_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     return campaign
 
 
-@router.post("", response_model=CampaignOut)
+@router.post("", response_model=CampaignOut, dependencies=[Depends(require_scope("operate"))])
 async def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)):
     from craftsman.scoring.embeddings import get_embedder
 
@@ -52,7 +53,11 @@ async def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)
     return campaign
 
 
-@router.post("/{campaign_id}/variants", response_model=VariantOut)
+@router.post(
+    "/{campaign_id}/variants",
+    response_model=VariantOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
 def add_variant(campaign_id: uuid.UUID, payload: VariantCreate, db: Session = Depends(get_db)):
     step = db.scalar(
         select(SequenceStep).where(
@@ -71,7 +76,11 @@ def add_variant(campaign_id: uuid.UUID, payload: VariantCreate, db: Session = De
     return variant
 
 
-@router.post("/{campaign_id}/activate", response_model=CampaignOut)
+@router.post(
+    "/{campaign_id}/activate",
+    response_model=CampaignOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
 async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     """Activate: score all verified leads against the ICP and enroll those above threshold."""
     from craftsman.scoring.embeddings import get_embedder
@@ -130,7 +139,11 @@ async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     return campaign
 
 
-@router.post("/{campaign_id}/pause", response_model=CampaignOut)
+@router.post(
+    "/{campaign_id}/pause",
+    response_model=CampaignOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
 def pause(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
@@ -140,7 +153,11 @@ def pause(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     return campaign
 
 
-@router.get("/{campaign_id}/bandit", response_model=list[ArmPosterior])
+@router.get(
+    "/{campaign_id}/bandit",
+    response_model=list[ArmPosterior],
+    dependencies=[Depends(require_scope("read"))],
+)
 def bandit_posteriors(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     """Posterior data for the dashboard's converging-Beta-PDF viz."""
     rows = db.execute(

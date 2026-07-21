@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useTransition } from "react";
 
 const NAV = [
   { href: "/", label: "Overview" },
@@ -13,6 +14,16 @@ const NAV = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const [loggingOut, startLogout] = useTransition();
+
+  function logout() {
+    startLogout(async () => {
+      await fetch("/api/logout", { method: "POST" });
+      router.replace("/login");
+      router.refresh();
+    });
+  }
 
   return (
     <aside className="flex h-screen w-[240px] shrink-0 flex-col bg-sidebar text-sidebar-ink">
@@ -57,6 +68,14 @@ export function Sidebar() {
         <p className="mt-2 text-[11px] leading-relaxed text-sidebar-muted/80">
           Learning loop active · Thompson sampling
         </p>
+        <button
+          type="button"
+          onClick={logout}
+          disabled={loggingOut}
+          className="mt-3 text-[11px] font-medium text-sidebar-muted underline-offset-2 transition-colors hover:text-sidebar-ink hover:underline disabled:opacity-50"
+        >
+          {loggingOut ? "Signing out…" : "Sign out"}
+        </button>
       </div>
     </aside>
   );

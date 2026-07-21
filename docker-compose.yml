@@ -84,6 +84,10 @@ services:
     environment:
       API_URL: http://api:8000
       NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+      # Dashboard auth — the API key stays server-side (never shipped to the browser).
+      CRAFTSMAN_API_KEY: ${CRAFTSMAN_API_KEY:?set CRAFTSMAN_API_KEY — see .env.example}
+      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?set DASHBOARD_PASSWORD_HASH — run web/scripts/hash-password.mjs}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:?set DASHBOARD_SESSION_SECRET — a random string}
     depends_on:
       - api
     ports:

@@ -219,3 +219,21 @@ class UnsubscribeToken(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
+
+
+class ApiKey(Base):
+    """A hashed, scoped API key. The plaintext token is shown once at creation;
+    only its SHA-256 digest is stored here."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)  # first chars, for UI/logs
+    key_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
+    scopes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # read|operate|admin
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

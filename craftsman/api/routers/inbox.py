@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.core.models import Company, Enrollment, Lead, Message, ReviewQueueItem
 from craftsman.core.schemas import MessageOut, ReplyClassification
@@ -42,7 +43,7 @@ def _enrich(db: Session, msg: Message) -> MessageOut:
     )
 
 
-@router.get("", response_model=list[MessageOut])
+@router.get("", response_model=list[MessageOut], dependencies=[Depends(require_scope("read"))])
 def unified_inbox(
     label: str | None = None,
     limit: int = 100,
@@ -59,7 +60,7 @@ def unified_inbox(
     return [_enrich(db, m) for m in db.scalars(stmt).all()]
 
 
-@router.get("/review", response_model=list[dict])
+@router.get("/review", response_model=list[dict], dependencies=[Depends(require_scope("read"))])
 def review_queue(limit: int = 50, db: Session = Depends(get_db)):
     rows = db.scalars(
         select(ReviewQueueItem)
@@ -82,7 +83,11 @@ class Reclassify(BaseModel):
     label: str
 
 
-@router.post("/{msg_id}/reclassify", response_model=MessageOut)
+@router.post(
+    "/{msg_id}/reclassify",
+    response_model=MessageOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
 def reclassify(msg_id: uuid.UUID, payload: Reclassify, db: Session = Depends(get_db)):
     """Human override from the review queue / dashboard."""
     msg = db.get(Message, msg_id)

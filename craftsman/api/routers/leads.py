@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.compliance.suppression import erase_lead
 from craftsman.core.models import Lead
@@ -12,7 +13,7 @@ from craftsman.core.schemas import ImportResult, LeadOut
 router = APIRouter(prefix="/leads", tags=["leads"])
 
 
-@router.post("/import", response_model=ImportResult)
+@router.post("/import", response_model=ImportResult, dependencies=[Depends(require_scope("operate"))])
 async def import_leads(file: UploadFile, db: Session = Depends(get_db)):
     from craftsman.ingest.csv_import import import_csv
 
@@ -31,7 +32,7 @@ async def import_leads(file: UploadFile, db: Session = Depends(get_db)):
     return result
 
 
-@router.get("", response_model=list[LeadOut])
+@router.get("", response_model=list[LeadOut], dependencies=[Depends(require_scope("read"))])
 def list_leads(
     score_gte: float | None = None,
     status: str | None = None,
@@ -46,7 +47,7 @@ def list_leads(
     return db.scalars(stmt).all()
 
 
-@router.delete("/{lead_id}/erase", status_code=204)
+@router.delete("/{lead_id}/erase", status_code=204, dependencies=[Depends(require_scope("admin"))])
 def erase(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     """GDPR data-subject erasure: hard delete + permanent suppression."""
     lead = db.get(Lead, lead_id)
