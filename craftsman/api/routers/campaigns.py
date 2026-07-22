@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from craftsman.api.auth import require_scope
@@ -60,6 +60,9 @@ def _campaign_detail(db: Session, campaign: Campaign) -> CampaignDetailOut:
         .where(SequenceStep.campaign_id == campaign.id)
         .order_by(SequenceStep.step_order)
     ).all()
+    enrollments = db.scalar(
+        select(func.count(Enrollment.id)).where(Enrollment.campaign_id == campaign.id)
+    )
     return CampaignDetailOut(
         id=campaign.id,
         name=campaign.name,
@@ -68,6 +71,7 @@ def _campaign_detail(db: Session, campaign: Campaign) -> CampaignDetailOut:
         icp_description=campaign.icp_description,
         value_prop=campaign.value_prop,
         sender_persona=campaign.sender_persona,
+        enrollments=enrollments or 0,
         steps=[
             StepOut(
                 id=s.id,

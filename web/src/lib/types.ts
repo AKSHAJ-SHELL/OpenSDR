@@ -42,6 +42,56 @@ export type Campaign = {
   value_prop?: string | null;
 };
 
+export type SenderPersona = {
+  name?: string;
+  title?: string;
+  company?: string;
+  calendly?: string;
+};
+
+export type VariantDetail = {
+  id: string;
+  name: string | null;
+  alpha: number;
+  beta: number;
+  active: boolean;
+  skeleton: string;
+  slot_schema: Record<string, string>;
+  trials: number;
+};
+
+export type Step = {
+  id: string;
+  step_order: number;
+  wait_days: number;
+  variants: VariantDetail[];
+};
+
+export type CampaignDetail = Campaign & {
+  sender_persona: SenderPersona | null;
+  enrollments: number;
+  steps: Step[];
+};
+
+export type CampaignCreate = {
+  name: string;
+  icp_description: string;
+  value_prop: string;
+  sender_persona: SenderPersona;
+  daily_cap: number;
+  steps: number[];
+};
+
+export type CampaignUpdate = Partial<
+  Pick<Campaign, "name" | "icp_description" | "value_prop" | "daily_cap">
+> & { sender_persona?: SenderPersona };
+
+export type VariantUpdate = {
+  name?: string;
+  active?: boolean;
+  skeleton?: string;
+};
+
 export type Mailbox = {
   id: string;
   email: string;

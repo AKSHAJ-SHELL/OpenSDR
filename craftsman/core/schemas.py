@@ -145,6 +145,7 @@ class StepUpdate(BaseModel):
 
 class CampaignDetailOut(CampaignOut):
     sender_persona: dict | None = None
+    enrollments: int = Field(description="Enrollment count; >0 freezes the sequence structure.")
     steps: list[StepOut]
 
 

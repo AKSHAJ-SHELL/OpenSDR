@@ -98,9 +98,14 @@ docker compose up -d
 
 # import leads (Bearer key required)
 curl -F "file=@leads.csv" -H "Authorization: Bearer $KEY" http://localhost:8000/leads/import
-
-# create a campaign, add variants, activate — see /docs (also key-gated)
 ```
+
+Then build the campaign in the dashboard: **Campaigns → New campaign** (ICP, value
+prop, sender persona, step cadence), add at least one skeleton variant per step in the
+builder — placeholders are validated as you type and previewed with sample fills — and
+activate. Everything is equally scriptable against the API (`/docs`, key-gated); once a
+variant's bandit arm has recorded trials its skeleton is frozen — clone it as a new
+variant instead of rewriting measured history.
 
 > **⚠️ Exposure warning.** The API and dashboard bind to `localhost` by default.
 > **Do not expose port 8000 or 3000 to the internet.** Every API route now requires a

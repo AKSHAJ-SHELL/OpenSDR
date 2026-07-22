@@ -68,6 +68,7 @@ def test_detail_reads_back_steps_and_variants(client, make_key):
 
     detail = client.get(f"/campaigns/{cid}", headers=h).json()
     assert detail["sender_persona"]["name"] == "Ada"
+    assert detail["enrollments"] == 0
     assert [s["step_order"] for s in detail["steps"]] == [1, 2, 3]
     assert [s["wait_days"] for s in detail["steps"]] == [0, 3, 4]
     (variant,) = detail["steps"][0]["variants"]
