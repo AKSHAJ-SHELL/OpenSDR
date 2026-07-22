@@ -121,11 +121,17 @@ Local app processes (Ollama on the host): infra via `docker compose up -d postgr
 
 ```bash
 pip install -e ".[dev]"
-uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000
+uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000 --reload
 celery -A craftsman.workers.celery_app worker -Q research,generate,send,inbox,enrich,settle -l info
 celery -A craftsman.workers.celery_app beat -l info
 cd web && npm install && npm run dev   # http://localhost:3000
 ```
+
+> **`--reload` matters in dev.** `next dev` hot-reloads the dashboard, but uvicorn and
+> Celery do not reload on their own. Without it you can end up with a new dashboard
+> talking to an API running yesterday's code — new endpoints 404/405 and pages fail in
+> confusing ways. **Celery workers never auto-reload**: restart them by hand after
+> changing anything under `craftsman/workers/`, `research/`, `copywriter/`, or `sender/`.
 
 ## Authentication
 

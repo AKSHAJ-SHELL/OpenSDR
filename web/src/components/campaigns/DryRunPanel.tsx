@@ -13,13 +13,17 @@ const MAILPIT_URL = process.env.NEXT_PUBLIC_MAILPIT_URL ?? "http://localhost:802
 export function DryRunPanel({
   campaignId,
   initialRuns,
+  loadError = null,
 }: {
   campaignId: string;
   initialRuns: DryRun[];
+  /** Set when the run history could not be fetched; the panel says so instead of
+   *  pretending there are no runs. */
+  loadError?: string | null;
 }) {
   const [runs, setRuns] = useState(initialRuns);
   const [n, setN] = useState("3");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(loadError);
   const latest = runs[0] ?? null;
   const polling = latest?.status === "running";
 
