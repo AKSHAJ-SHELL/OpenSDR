@@ -113,6 +113,11 @@ class Variant(Base):
 
     step: Mapped[SequenceStep] = relationship(back_populates="variants")
 
+    @property
+    def trials(self) -> int:
+        """Observed trials under the Beta(1,1) prior; editing a tried arm rewrites history."""
+        return int(self.alpha + self.beta - 2)
+
 
 class Enrollment(Base):
     __tablename__ = "enrollments"

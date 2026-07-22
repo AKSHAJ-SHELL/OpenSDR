@@ -95,7 +95,10 @@ class VariantCreate(BaseModel):
     step_order: int
     name: str
     skeleton: str
-    slot_schema: dict
+    slot_schema: dict | None = Field(
+        default=None,
+        description="Optional; derived from the skeleton's placeholders when omitted.",
+    )
 
 
 class VariantOut(BaseModel):
@@ -106,6 +109,53 @@ class VariantOut(BaseModel):
     active: bool
 
     model_config = {"from_attributes": True}
+
+
+class VariantUpdate(BaseModel):
+    name: str | None = None
+    active: bool | None = None
+    skeleton: str | None = Field(
+        default=None,
+        description="Editable only while the arm has zero trials; clone a new variant otherwise.",
+    )
+
+
+class VariantDetailOut(VariantOut):
+    skeleton: str
+    slot_schema: dict
+    trials: int
+
+
+class StepOut(BaseModel):
+    id: uuid.UUID
+    step_order: int
+    wait_days: int
+    variants: list[VariantDetailOut]
+
+    model_config = {"from_attributes": True}
+
+
+class StepCreate(BaseModel):
+    wait_days: int = Field(ge=0)
+
+
+class StepUpdate(BaseModel):
+    wait_days: int = Field(ge=0)
+
+
+class CampaignDetailOut(CampaignOut):
+    sender_persona: dict | None = None
+    steps: list[StepOut]
+
+
+class CampaignUpdate(BaseModel):
+    """Partial update; status transitions stay on activate/pause."""
+
+    name: str | None = None
+    icp_description: str | None = None
+    value_prop: str | None = None
+    sender_persona: dict | None = None
+    daily_cap: int | None = Field(default=None, ge=1)
 
 
 class MailboxCreate(BaseModel):

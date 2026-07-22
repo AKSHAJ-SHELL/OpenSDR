@@ -7,17 +7,80 @@ from sqlalchemy.orm import Session
 
 from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
+from craftsman.copywriter.fill import KNOWN_SKELETON_SLOTS, LLM_SLOTS, skeleton_slots
 from craftsman.core.config import get_settings
 from craftsman.core.models import Campaign, Enrollment, Lead, SequenceStep, Variant
 from craftsman.core.schemas import (
     ArmPosterior,
     CampaignCreate,
+    CampaignDetailOut,
     CampaignOut,
+    CampaignUpdate,
+    StepCreate,
+    StepOut,
+    StepUpdate,
     VariantCreate,
-    VariantOut,
+    VariantDetailOut,
+    VariantUpdate,
 )
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
+
+
+def _get_campaign_or_404(db: Session, campaign_id: uuid.UUID) -> Campaign:
+    campaign = db.get(Campaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "campaign not found")
+    return campaign
+
+
+def _has_enrollments(db: Session, campaign_id: uuid.UUID) -> bool:
+    return db.scalar(select(Enrollment.id).where(Enrollment.campaign_id == campaign_id).limit(1)) is not None
+
+
+def _checked_slot_schema(skeleton: str) -> dict:
+    """422 on placeholders outside the slot vocabulary; derive slot_schema from the rest.
+
+    render_skeleton raises on unfilled placeholders at send time — this moves that
+    failure to authoring time, where the author can fix it.
+    """
+    unknown = skeleton_slots(skeleton) - KNOWN_SKELETON_SLOTS
+    if unknown:
+        raise HTTPException(
+            422,
+            f"unknown skeleton placeholder(s): {sorted(unknown)}; "
+            f"valid slots are {sorted(KNOWN_SKELETON_SLOTS)}",
+        )
+    return {slot: "string" for slot in sorted(skeleton_slots(skeleton) & LLM_SLOTS)}
+
+
+def _campaign_detail(db: Session, campaign: Campaign) -> CampaignDetailOut:
+    steps = db.scalars(
+        select(SequenceStep)
+        .where(SequenceStep.campaign_id == campaign.id)
+        .order_by(SequenceStep.step_order)
+    ).all()
+    return CampaignDetailOut(
+        id=campaign.id,
+        name=campaign.name,
+        status=campaign.status,
+        daily_cap=campaign.daily_cap,
+        icp_description=campaign.icp_description,
+        value_prop=campaign.value_prop,
+        sender_persona=campaign.sender_persona,
+        steps=[
+            StepOut(
+                id=s.id,
+                step_order=s.step_order,
+                wait_days=s.wait_days,
+                variants=[
+                    VariantDetailOut.model_validate(v)
+                    for v in sorted(s.variants, key=lambda v: (v.name or "", v.id.hex))
+                ],
+            )
+            for s in steps
+        ],
+    )
 
 
 @router.get("", response_model=list[CampaignOut], dependencies=[Depends(require_scope("read"))])
@@ -25,12 +88,31 @@ def list_campaigns(db: Session = Depends(get_db)):
     return list(db.scalars(select(Campaign).order_by(Campaign.name)).all())
 
 
-@router.get("/{campaign_id}", response_model=CampaignOut, dependencies=[Depends(require_scope("read"))])
+@router.get(
+    "/{campaign_id}", response_model=CampaignDetailOut, dependencies=[Depends(require_scope("read"))]
+)
 def get_campaign(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
-    campaign = db.get(Campaign, campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "campaign not found")
-    return campaign
+    """Full read-back for the builder UI: campaign + persona + steps + variants."""
+    return _campaign_detail(db, _get_campaign_or_404(db, campaign_id))
+
+
+@router.patch(
+    "/{campaign_id}", response_model=CampaignDetailOut, dependencies=[Depends(require_scope("operate"))]
+)
+async def update_campaign(
+    campaign_id: uuid.UUID, payload: CampaignUpdate, db: Session = Depends(get_db)
+):
+    campaign = _get_campaign_or_404(db, campaign_id)
+    changes = payload.model_dump(exclude_unset=True)
+    reembed = "icp_description" in changes and changes["icp_description"] != campaign.icp_description
+    for field, value in changes.items():
+        setattr(campaign, field, value)
+    if reembed:
+        from craftsman.scoring.embeddings import get_embedder
+
+        campaign.icp_embedding = (await get_embedder().embed([campaign.icp_description]))[0]
+    db.add(campaign)
+    return _campaign_detail(db, campaign)
 
 
 @router.post("", response_model=CampaignOut, dependencies=[Depends(require_scope("operate"))])
@@ -54,8 +136,93 @@ async def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)
 
 
 @router.post(
+    "/{campaign_id}/steps",
+    response_model=StepOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def add_step(campaign_id: uuid.UUID, payload: StepCreate, db: Session = Depends(get_db)):
+    """Append a step. Structural changes are blocked once anyone is enrolled —
+    enrollments index into the sequence by current_step."""
+    _get_campaign_or_404(db, campaign_id)
+    if _has_enrollments(db, campaign_id):
+        raise HTTPException(409, "campaign has enrollments; sequence structure is frozen")
+    last = db.scalar(
+        select(SequenceStep.step_order)
+        .where(SequenceStep.campaign_id == campaign_id)
+        .order_by(SequenceStep.step_order.desc())
+        .limit(1)
+    )
+    step = SequenceStep(
+        campaign_id=campaign_id, step_order=(last or 0) + 1, wait_days=payload.wait_days
+    )
+    db.add(step)
+    db.flush()
+    return StepOut(id=step.id, step_order=step.step_order, wait_days=step.wait_days, variants=[])
+
+
+@router.patch(
+    "/{campaign_id}/steps/{step_id}",
+    response_model=StepOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def update_step(
+    campaign_id: uuid.UUID, step_id: uuid.UUID, payload: StepUpdate, db: Session = Depends(get_db)
+):
+    """wait_days only — read at scheduling time, so safe to change on a live campaign."""
+    step = db.scalar(
+        select(SequenceStep).where(
+            SequenceStep.id == step_id, SequenceStep.campaign_id == campaign_id
+        )
+    )
+    if step is None:
+        raise HTTPException(404, "step not found in campaign")
+    step.wait_days = payload.wait_days
+    db.add(step)
+    return StepOut(
+        id=step.id,
+        step_order=step.step_order,
+        wait_days=step.wait_days,
+        variants=[VariantDetailOut.model_validate(v) for v in step.variants],
+    )
+
+
+@router.delete(
+    "/{campaign_id}/steps/{step_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def delete_step(campaign_id: uuid.UUID, step_id: uuid.UUID, db: Session = Depends(get_db)):
+    _get_campaign_or_404(db, campaign_id)
+    if _has_enrollments(db, campaign_id):
+        raise HTTPException(409, "campaign has enrollments; sequence structure is frozen")
+    step = db.scalar(
+        select(SequenceStep).where(
+            SequenceStep.id == step_id, SequenceStep.campaign_id == campaign_id
+        )
+    )
+    if step is None:
+        raise HTTPException(404, "step not found in campaign")
+    for variant in step.variants:
+        db.delete(variant)
+    db.delete(step)
+    db.flush()
+    # Renumber ascending: each row moves into the slot just freed, so the
+    # (campaign_id, step_order) unique constraint holds at every flush.
+    followers = db.scalars(
+        select(SequenceStep)
+        .where(SequenceStep.campaign_id == campaign_id, SequenceStep.step_order > step.step_order)
+        .order_by(SequenceStep.step_order)
+    ).all()
+    for follower in followers:
+        follower.step_order -= 1
+        db.add(follower)
+        db.flush()
+
+
+@router.post(
     "/{campaign_id}/variants",
-    response_model=VariantOut,
+    response_model=VariantDetailOut,
     dependencies=[Depends(require_scope("operate"))],
 )
 def add_variant(campaign_id: uuid.UUID, payload: VariantCreate, db: Session = Depends(get_db)):
@@ -67,12 +234,52 @@ def add_variant(campaign_id: uuid.UUID, payload: VariantCreate, db: Session = De
     )
     if step is None:
         raise HTTPException(404, f"no step {payload.step_order} in campaign")
+    slot_schema = _checked_slot_schema(payload.skeleton)
     variant = Variant(
         step_id=step.id, name=payload.name,
-        skeleton=payload.skeleton, slot_schema=payload.slot_schema,
+        skeleton=payload.skeleton,
+        slot_schema=payload.slot_schema if payload.slot_schema is not None else slot_schema,
     )
     db.add(variant)
     db.flush()
+    return variant
+
+
+@router.patch(
+    "/{campaign_id}/variants/{variant_id}",
+    response_model=VariantDetailOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def update_variant(
+    campaign_id: uuid.UUID,
+    variant_id: uuid.UUID,
+    payload: VariantUpdate,
+    db: Session = Depends(get_db),
+):
+    variant = db.scalar(
+        select(Variant)
+        .join(SequenceStep, Variant.step_id == SequenceStep.id)
+        .where(Variant.id == variant_id, SequenceStep.campaign_id == campaign_id)
+    )
+    if variant is None:
+        raise HTTPException(404, "variant not found in campaign")
+    changes = payload.model_dump(exclude_unset=True)
+    if "skeleton" in changes and changes["skeleton"] != variant.skeleton:
+        # The posterior measured replies to this exact skeleton; rewriting it would
+        # attach measured history to copy that was never sent.
+        if variant.trials > 0:
+            raise HTTPException(
+                409,
+                f"variant has {variant.trials} recorded trial(s); its skeleton is frozen — "
+                "clone it as a new variant (fresh arm) and deactivate this one instead",
+            )
+        variant.slot_schema = _checked_slot_schema(changes["skeleton"])
+        variant.skeleton = changes["skeleton"]
+    if "name" in changes:
+        variant.name = changes["name"]
+    if "active" in changes:
+        variant.active = changes["active"]
+    db.add(variant)
     return variant
 
 
