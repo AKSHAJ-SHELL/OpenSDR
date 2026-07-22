@@ -149,6 +149,39 @@ class CampaignDetailOut(CampaignOut):
     steps: list[StepOut]
 
 
+class DryRunRequest(BaseModel):
+    n: int = Field(default=3, ge=1, le=10, description="Sample size; capped to bound LLM spend.")
+
+
+class DryRunItemOut(BaseModel):
+    id: uuid.UUID
+    lead_email: str
+    lead_name: str | None
+    icp_score: float | None
+    variant_name: str | None
+    subject: str | None
+    body: str | None
+    validator_ok: bool | None
+    validator_errors: list | None
+    delivered: bool
+    error: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class DryRunOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    status: str
+    requested_n: int
+    error: str | None
+    created_at: datetime | None
+    finished_at: datetime | None
+    items: list[DryRunItemOut] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
 class CampaignUpdate(BaseModel):
     """Partial update; status transitions stay on activate/pause."""
 

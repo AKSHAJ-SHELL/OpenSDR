@@ -403,6 +403,8 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `LOG_LEVEL` | INFO; JSON logs with lead/enrollment/message correlation ids | `core/logging.py` |
 | `/metrics` | Prometheus, read-scope gated, pull-based from Postgres+Redis | `core/metrics.py`, `api/app.py` |
 | `redrive_unsent_after_minutes` | 15; unsent-claim sweep age cutoff | `core/config.py`, `sequencer/redrive.py` |
+| `mailpit_smtp_host` / `mailpit_smtp_port` | localhost / 1025 (`mailpit` in Docker); dry-run delivery target, regardless of mailbox SMTP | `core/config.py`, `sender/smtp.py deliver_to_mailpit` |
+| Dry-run sample cap | `n` ∈ [1, 10] per run (bounds LLM spend) | `core/schemas.py DryRunRequest` |
 
 ---
 

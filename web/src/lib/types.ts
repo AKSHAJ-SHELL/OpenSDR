@@ -92,6 +92,31 @@ export type VariantUpdate = {
   skeleton?: string;
 };
 
+export type DryRunItem = {
+  id: string;
+  lead_email: string;
+  lead_name: string | null;
+  icp_score: number | null;
+  variant_name: string | null;
+  subject: string | null;
+  body: string | null;
+  validator_ok: boolean | null;
+  validator_errors: string[] | null;
+  delivered: boolean;
+  error: string | null;
+};
+
+export type DryRun = {
+  id: string;
+  campaign_id: string;
+  status: "running" | "complete" | "failed";
+  requested_n: number;
+  error: string | null;
+  created_at: string | null;
+  finished_at: string | null;
+  items: DryRunItem[];
+};
+
 export type Mailbox = {
   id: string;
   email: string;

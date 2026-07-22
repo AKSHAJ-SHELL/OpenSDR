@@ -16,8 +16,28 @@ export function CampaignActions({
 
   function run(action: "activate" | "pause") {
     startTransition(async () => {
-      if (action === "activate") await api.activate(id);
-      else await api.pause(id);
+      if (action === "activate") {
+        // Two-step activate (M1.2): no completed dry-run → explicit override required.
+        try {
+          const runs = await api.dryRuns(id);
+          if (
+            !runs.some((r) => r.status === "complete") &&
+            !window.confirm(
+              "No completed dry-run for this campaign.\n\n" +
+                "Recommended: run a dry-run first — it previews the real research, copy, " +
+                "and validator verdicts in Mailpit before anything is sent for real.\n\n" +
+                "Activate anyway?",
+            )
+          ) {
+            return;
+          }
+        } catch {
+          // dry-run status unavailable — fall through to the plain activate
+        }
+        await api.activate(id);
+      } else {
+        await api.pause(id);
+      }
       router.refresh();
     });
   }

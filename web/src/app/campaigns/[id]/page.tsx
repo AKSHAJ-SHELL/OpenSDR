@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { api } from "@/lib/api";
 import { CampaignActions } from "@/components/campaigns/CampaignActions";
 import { CampaignBuilder } from "@/components/campaigns/CampaignBuilder";
+import { DryRunPanel } from "@/components/campaigns/DryRunPanel";
 import { ApiDown } from "@/components/ui/ApiDown";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -14,9 +15,9 @@ export default async function CampaignDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  let campaign;
+  let campaign, dryRuns;
   try {
-    campaign = await api.campaignDetail(id);
+    [campaign, dryRuns] = await Promise.all([api.campaignDetail(id), api.dryRuns(id)]);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     if (message.startsWith("404")) notFound();
@@ -40,7 +41,8 @@ export default async function CampaignDetailPage({
           </div>
         }
       />
-      <div className="animate-rise-delay-1">
+      <div className="grid gap-6 animate-rise-delay-1">
+        <DryRunPanel campaignId={campaign.id} initialRuns={dryRuns} />
         <CampaignBuilder campaign={campaign} />
       </div>
     </>

@@ -9,13 +9,16 @@ from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.copywriter.fill import KNOWN_SKELETON_SLOTS, LLM_SLOTS, skeleton_slots
 from craftsman.core.config import get_settings
-from craftsman.core.models import Campaign, Enrollment, Lead, SequenceStep, Variant
+from craftsman.core.models import Campaign, DryRun, Enrollment, Lead, SequenceStep, Variant
 from craftsman.core.schemas import (
     ArmPosterior,
     CampaignCreate,
     CampaignDetailOut,
     CampaignOut,
     CampaignUpdate,
+    DryRunItemOut,
+    DryRunOut,
+    DryRunRequest,
     StepCreate,
     StepOut,
     StepUpdate,
@@ -362,6 +365,78 @@ def pause(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     campaign.status = "paused"
     db.add(campaign)
     return campaign
+
+
+@router.post(
+    "/{campaign_id}/dry-run",
+    response_model=DryRunOut,
+    status_code=202,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def start_dry_run(
+    campaign_id: uuid.UUID, payload: DryRunRequest, db: Session = Depends(get_db)
+):
+    """Preflight the real pipeline for N sample leads; sends go to Mailpit only."""
+    campaign = _get_campaign_or_404(db, campaign_id)
+    step = db.scalar(
+        select(SequenceStep).where(
+            SequenceStep.campaign_id == campaign.id, SequenceStep.step_order == 1
+        )
+    )
+    has_variants = step is not None and db.scalar(
+        select(Variant.id).where(Variant.step_id == step.id, Variant.active).limit(1)
+    )
+    if not has_variants:
+        raise HTTPException(400, "campaign has no active variants on step 1; add one first")
+
+    run = DryRun(campaign_id=campaign.id, status="running", requested_n=payload.n)
+    db.add(run)
+    db.commit()  # durable before the worker looks for it
+
+    from craftsman.workers.tasks import run_dry_run
+
+    run_dry_run.delay(str(run.id))
+    return DryRunOut.model_validate(run)
+
+
+@router.get(
+    "/{campaign_id}/dry-runs",
+    response_model=list[DryRunOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def list_dry_runs(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    _get_campaign_or_404(db, campaign_id)
+    runs = db.scalars(
+        select(DryRun)
+        .where(DryRun.campaign_id == campaign_id)
+        .order_by(DryRun.created_at.desc())
+        .limit(10)
+    ).all()
+    return [_dry_run_out(run) for run in runs]
+
+
+@router.get(
+    "/{campaign_id}/dry-runs/{run_id}",
+    response_model=DryRunOut,
+    dependencies=[Depends(require_scope("read"))],
+)
+def get_dry_run(campaign_id: uuid.UUID, run_id: uuid.UUID, db: Session = Depends(get_db)):
+    run = db.scalar(
+        select(DryRun).where(DryRun.id == run_id, DryRun.campaign_id == campaign_id)
+    )
+    if run is None:
+        raise HTTPException(404, "dry run not found in campaign")
+    return _dry_run_out(run)
+
+
+def _dry_run_out(run: DryRun) -> DryRunOut:
+    out = DryRunOut.model_validate(run)
+    out.items = sorted(
+        (DryRunItemOut.model_validate(i) for i in run.items),
+        key=lambda i: (i.icp_score or 0.0),
+        reverse=True,
+    )
+    return out
 
 
 @router.get(

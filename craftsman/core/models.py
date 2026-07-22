@@ -268,6 +268,49 @@ class DeadLetter(Base):
     )
 
 
+class DryRun(Base):
+    """A preflight run: the real pipeline for N sample leads, delivered to Mailpit only.
+    Touches none of the production state (enrollments, messages, caps, bandit)."""
+
+    __tablename__ = "dry_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="running")  # running|complete|failed
+    requested_n: Mapped[int] = mapped_column(Integer, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    items: Mapped[list["DryRunItem"]] = relationship(back_populates="dry_run")
+
+
+class DryRunItem(Base):
+    """One sampled lead's trip through the dry-run pipeline. Holds lead PII (email,
+    personalized copy), so erase_lead deletes these rows by lead_id."""
+
+    __tablename__ = "dry_run_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    dry_run_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("dry_runs.id"), nullable=False)
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("leads.id"), index=True)
+    lead_email: Mapped[str] = mapped_column(Text, nullable=False)
+    lead_name: Mapped[str | None] = mapped_column(Text)
+    icp_score: Mapped[float | None] = mapped_column(Float)
+    variant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("variants.id"))
+    variant_name: Mapped[str | None] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(Text)
+    body: Mapped[str | None] = mapped_column(Text)
+    validator_ok: Mapped[bool | None] = mapped_column(Boolean)
+    validator_errors: Mapped[list | None] = mapped_column(JSONB)
+    delivered: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    dry_run: Mapped[DryRun] = relationship(back_populates="items")
+
+
 class ApiKey(Base):
     """A hashed, scoped API key. The plaintext token is shown once at creation;
     only its SHA-256 digest is stored here."""

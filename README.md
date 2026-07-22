@@ -102,10 +102,14 @@ curl -F "file=@leads.csv" -H "Authorization: Bearer $KEY" http://localhost:8000/
 
 Then build the campaign in the dashboard: **Campaigns → New campaign** (ICP, value
 prop, sender persona, step cadence), add at least one skeleton variant per step in the
-builder — placeholders are validated as you type and previewed with sample fills — and
-activate. Everything is equally scriptable against the API (`/docs`, key-gated); once a
-variant's bandit arm has recorded trials its skeleton is frozen — clone it as a new
-variant instead of rewriting measured history.
+builder — placeholders are validated as you type and previewed with sample fills — then
+**dry-run before you activate**: the builder's Dry run panel routes the real pipeline
+(research → variant pick → slot-fill → validator) for your top-scoring sample leads and
+delivers to Mailpit only, never a real inbox. You see the exact emails and validator
+verdicts the live campaign would produce; Activate asks for an explicit override if no
+dry-run has completed. Everything is equally scriptable against the API (`/docs`,
+key-gated); once a variant's bandit arm has recorded trials its skeleton is frozen —
+clone it as a new variant instead of rewriting measured history.
 
 > **⚠️ Exposure warning.** The API and dashboard bind to `localhost` by default.
 > **Do not expose port 8000 or 3000 to the internet.** Every API route now requires a

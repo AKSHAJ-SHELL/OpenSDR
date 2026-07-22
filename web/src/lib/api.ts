@@ -4,6 +4,7 @@ import type {
   CampaignCreate,
   CampaignDetail,
   CampaignUpdate,
+  DryRun,
   InboxMessage,
   Lead,
   Mailbox,
@@ -93,6 +94,11 @@ export const api = {
     post<VariantDetail>(`/campaigns/${campaignId}/variants`, body),
   updateVariant: (campaignId: string, variantId: string, body: VariantUpdate) =>
     patch<VariantDetail>(`/campaigns/${campaignId}/variants/${variantId}`, body),
+  startDryRun: (campaignId: string, n: number) =>
+    post<DryRun>(`/campaigns/${campaignId}/dry-run`, { n }),
+  dryRuns: (campaignId: string) => get<DryRun[]>(`/campaigns/${campaignId}/dry-runs`),
+  dryRun: (campaignId: string, runId: string) =>
+    get<DryRun>(`/campaigns/${campaignId}/dry-runs/${runId}`),
   mailboxes: () => get<Mailbox[]>("/mailboxes"),
   bandit: (campaignId: string) => get<ArmPosterior[]>(`/campaigns/${campaignId}/bandit`),
   activate: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/activate`),

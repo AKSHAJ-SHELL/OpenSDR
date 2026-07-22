@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # (e.g. http://localhost:8025 or http://mailpit:8025 in Docker).
     mailpit_url: str = ""
 
+    # Dry-run (M1.2) delivers to Mailpit's SMTP regardless of configured mailboxes.
+    mailpit_smtp_host: str = "localhost"  # "mailpit" in Docker
+    mailpit_smtp_port: int = 1025
+
 
 @lru_cache
 def get_settings() -> Settings:
