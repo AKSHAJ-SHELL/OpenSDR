@@ -14,6 +14,9 @@ import type {
   Overview,
   ReviewAction,
   ReviewItem,
+  SourcedLeadIn,
+  SourcedPreview,
+  SourceSearchRequest,
   Step,
   VariantDetail,
   VariantUpdate,
@@ -105,6 +108,10 @@ export const api = {
   },
   importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
   leadEnrichments: (id: string) => get<LeadEnrichment[]>(`/leads/${id}/enrichments`),
+  sourceProviders: () => get<string[]>("/leads/source/providers"),
+  sourceLeads: (body: SourceSearchRequest) => post<SourcedPreview>("/leads/source", body),
+  importSourced: (source: string, leads: SourcedLeadIn[]) =>
+    post<ImportResult>("/leads/source/import", { source, leads }),
   suppressLead: (id: string) => post<void>(`/leads/${id}/suppress`),
   eraseLead: (id: string) => del<void>(`/leads/${id}/erase`),
   reviewAction: (itemId: string, action: ReviewAction) =>

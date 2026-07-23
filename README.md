@@ -157,6 +157,21 @@ the dashboard to see it), but your CSV wins where it already had an answer. Ther
 proprietary contact database here and we don't pretend otherwise: results come from
 *your* provider accounts and are labeled with their source.
 
+**Find leads (bring your own keys).** *Craftsman → **Find leads*** searches your own
+provider account for people matching an ICP query + filters (titles, seniorities,
+industries, locations, employee ranges) and previews each candidate against the **same
+import gate a CSV faces** — syntax, dedupe, suppression — labeling every row `new` /
+`duplicate` / `suppressed` / `no usable email` before you import a thing. Set
+`LEAD_SOURCE_PROVIDERS=apollo,webhook` plus the matching `APOLLO_API_KEY` /
+`LEAD_SOURCE_WEBHOOK_URL`; unset means the page shows a configure-me state, never fake
+data. Sourced leads get **zero shortcuts**: the gate re-runs on import (a hand-forged
+request can't smuggle a suppressed address in), and they land as `status="new"`, queued
+for the same verify → enrich pipeline. Two honesty notes on the Apollo connector: people
+whose email is **credit-locked** (Apollo returns a valid-looking placeholder) are
+**dropped, not imported and not faked** — we never silently spend your unlock credits;
+and the webhook source only fetches **https** URLs through the same SSRF guard the
+research fetcher uses. Respect each provider's terms and credit model.
+
 **Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
 *blocked copy* (the validator rejected both generation attempts, so the enrollment is
 stuck — you get the validator's errors, the rejected slot text, and Retry / Skip step /

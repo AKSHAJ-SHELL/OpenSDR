@@ -346,6 +346,59 @@ class ImportResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------- lead sourcing (M2.2)
+
+
+class SourceFilters(BaseModel):
+    """Structured ICP filters. Each provider maps what it supports; unknown filters are
+    passed through honestly (no silent drop) where the provider accepts free text."""
+
+    titles: list[str] = Field(default_factory=list)
+    seniorities: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    company_domains: list[str] = Field(default_factory=list)
+    employee_ranges: list[str] = Field(default_factory=list)  # e.g. "51,200"
+
+
+class SourceSearchRequest(BaseModel):
+    provider: str
+    icp_query: str = ""
+    filters: SourceFilters = Field(default_factory=SourceFilters)
+    limit: int = Field(default=25, ge=1, le=50)  # capped to bound provider spend
+
+
+class SourcedLeadIn(BaseModel):
+    """A candidate row a client sends back to import. Re-checked by the gate — the
+    client is untrusted, so preview labels are not load-bearing for safety."""
+
+    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+    title: str | None = None
+    company_name: str | None = None
+    company_domain: str | None = None
+    linkedin_url: str | None = None
+
+
+class SourcedCandidate(SourcedLeadIn):
+    status: str  # new | duplicate | suppressed | invalid (from the gate, read-only)
+
+
+class SourcedPreview(BaseModel):
+    provider: str
+    candidates: list[SourcedCandidate]
+    new: int
+    duplicate: int
+    suppressed: int
+    invalid: int
+
+
+class SourceImportRequest(BaseModel):
+    source: str  # provider name, stamped onto imported leads
+    leads: list[SourcedLeadIn] = Field(max_length=50)
+
+
 # ---------------------------------------------------------------- API keys
 
 

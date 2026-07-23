@@ -1,14 +1,17 @@
-"""CSV lead import: parse → dedupe vs leads + suppression → persist."""
+"""CSV lead import: parse + column-normalize → the shared ingest gate.
+
+The gate (dedupe vs leads + suppression, syntax, persist) lives in `gate.py` so CSV
+upload and provider sourcing (M2.2) take the identical path. This module owns only the
+CSV-specific concern: turning a spreadsheet into normalized `LeadRow`s.
+"""
 
 import io
 
 import pandas as pd
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from craftsman.core.models import Company, Lead, SuppressionEntry
 from craftsman.core.schemas import ImportResult
-from craftsman.ingest.verify import domain_of, syntax_ok
+from craftsman.ingest.gate import LeadRow, ingest_leads
 
 # accepted column aliases → canonical
 COLUMN_ALIASES = {
@@ -32,62 +35,37 @@ COLUMN_ALIASES = {
 }
 
 
-def import_csv(db: Session, raw: bytes) -> ImportResult:
+def rows_from_csv(raw: bytes) -> list[LeadRow]:
+    """Parse + column-normalize a CSV into LeadRows. Raises ValueError if no email column."""
     df = pd.read_csv(io.BytesIO(raw), dtype=str).fillna("")
     df.columns = [COLUMN_ALIASES.get(c.strip().lower(), c.strip().lower()) for c in df.columns]
     if "email" not in df.columns:
-        return ImportResult(imported=0, deduped=0, suppressed=0, errors=["no 'email' column found"])
+        raise ValueError("no 'email' column found")
 
-    emails = [e.strip().lower() for e in df["email"].tolist()]
-    existing = set(
-        db.scalars(select(Lead.email).where(Lead.email.in_(emails))).all()
-    )
-    suppressed = set(
-        db.scalars(
-            select(SuppressionEntry.email).where(SuppressionEntry.email.in_(emails))
-        ).all()
-    )
+    def _val(row, key: str) -> str | None:
+        return str(row.get(key, "")).strip() or None
 
-    result = ImportResult(imported=0, deduped=0, suppressed=0)
-    seen: set[str] = set()
-    company_cache: dict[str, Company] = {}
-
+    rows = []
     for _, row in df.iterrows():
-        email = str(row.get("email", "")).strip().lower()
-        if not syntax_ok(email):
-            if email:
-                result.errors.append(f"bad email syntax: {email}")
-            continue
-        if email in seen or email in existing:
-            result.deduped += 1
-            continue
-        if email in suppressed:
-            result.suppressed += 1
-            continue
-        seen.add(email)
-
-        domain = str(row.get("company_domain", "")).strip().lower() or domain_of(email)
-        company = company_cache.get(domain)
-        if company is None:
-            company = db.scalar(select(Company).where(Company.domain == domain))
-            if company is None:
-                company = Company(domain=domain, name=str(row.get("company_name", "")) or None)
-                db.add(company)
-                db.flush()
-            company_cache[domain] = company
-
-        db.add(
-            Lead(
-                email=email,
-                company_id=company.id,
-                first_name=str(row.get("first_name", "")) or None,
-                last_name=str(row.get("last_name", "")) or None,
-                title=str(row.get("title", "")) or None,
-                linkedin_url=str(row.get("linkedin_url", "")) or None,
-                timezone=str(row.get("timezone", "")) or "America/Los_Angeles",
-                source="csv",
+        rows.append(
+            LeadRow(
+                email=str(row.get("email", "")),
+                first_name=_val(row, "first_name"),
+                last_name=_val(row, "last_name"),
+                title=_val(row, "title"),
+                company_name=_val(row, "company_name"),
+                company_domain=_val(row, "company_domain"),
+                linkedin_url=_val(row, "linkedin_url"),
+                timezone=_val(row, "timezone"),
             )
         )
-        result.imported += 1
+    return rows
 
+
+def import_csv(db: Session, raw: bytes) -> ImportResult:
+    try:
+        rows = rows_from_csv(raw)
+    except ValueError as e:
+        return ImportResult(imported=0, deduped=0, suppressed=0, errors=[str(e)])
+    result, _ = ingest_leads(db, rows, source="csv")
     return result

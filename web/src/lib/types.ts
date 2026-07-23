@@ -44,6 +44,46 @@ export type ImportResult = {
   errors: string[];
 };
 
+/** Lead sourcing (M2.2): find leads via a BYO-key provider, gate them, import selected. */
+export type SourceFilters = {
+  titles: string[];
+  seniorities: string[];
+  industries: string[];
+  locations: string[];
+  company_domains: string[];
+  employee_ranges: string[];
+};
+
+export type SourceSearchRequest = {
+  provider: string;
+  icp_query: string;
+  filters: SourceFilters;
+  limit: number;
+};
+
+export type SourcedLeadIn = {
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  title: string | null;
+  company_name: string | null;
+  company_domain: string | null;
+  linkedin_url: string | null;
+};
+
+export type SourcedCandidate = SourcedLeadIn & {
+  status: "new" | "duplicate" | "suppressed" | "invalid";
+};
+
+export type SourcedPreview = {
+  provider: string;
+  candidates: SourcedCandidate[];
+  new: number;
+  duplicate: number;
+  suppressed: number;
+  invalid: number;
+};
+
 export type InboxMessage = {
   id: string;
   direction: string;

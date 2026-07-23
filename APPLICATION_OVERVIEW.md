@@ -187,8 +187,18 @@ research brief (`ResearchBrief`), the copy slots (`SlotFill`), and the reply lab
 ## 6. Core subsystems (module by module)
 
 ### 6.1 Ingest & verification (`craftsman/ingest/`)
-- `csv_import.py` — column-alias normalization, syntax gate, dedupe vs leads + suppression, creates
-  Company+Lead. Returns `ImportResult{imported,deduped,suppressed,errors}`.
+- `gate.py` — **the one import gate** (M2.2): `classify_row` (pure `new|duplicate|suppressed|invalid`
+  predicate) + `ingest_leads(rows, source) -> (ImportResult, new_ids)`. Syntax → suppression → dedupe
+  (in-batch + vs existing) → get-or-create Company → persist. CSV upload and provider sourcing both
+  route through it — sourced leads get zero shortcuts.
+- `csv_import.py` — CSV-specific concern only: parse + column-alias normalize (`rows_from_csv`) →
+  `LeadRow`s → the shared gate. Returns `ImportResult`.
+- `sourcing.py` — **lead sourcing connectors** (M2.2): `LeadSourceProvider.search(query) -> LeadRow[]`
+  protocol; `ApolloSourceProvider` (`mixed_people/search`, BYO key — credit-locked/placeholder emails
+  are dropped, never faked or credit-unlocked silently), `WebhookSourceProvider` (GET a configured
+  https feed **through the M0.5 SSRF guard**, JSON or CSV body), `NullSourceProvider`. Each provider
+  has one monkeypatchable `_fetch` seam. `build_source_provider`/`enabled_providers` gate on
+  `LEAD_SOURCE_PROVIDERS` + key presence.
 - `verify.py` — `syntax_ok` → `mx_hosts` (dnspython MX) → optional `smtp_rcpt_ok` (SMTP RCPT probe
   on port 25, only if `do_rcpt=True`). This is the "syntax → MX → SMTP" verification the README claims.
 - `enrichment.py` — the BYO-key enrichment framework (M2.1; the former orphaned `adapters.py`
@@ -320,6 +330,9 @@ single highest-severity gap for enterprise use.
 | POST | `/leads/import` | CSV import → leads + enqueue verify | ✅ |
 | GET | `/leads` | list leads (`score_gte`, `status`, `limit`); returns score provenance + matched keyword | |
 | GET | `/leads/{id}/enrichments` | enrichment provenance rows: field/value/source/confidence/fetched_at (M2.1) | |
+| GET | `/leads/source/providers` | configured (enabled + keyed) lead sources (M2.2) | |
+| POST | `/leads/source` | search a provider → **preview** candidates gate-labeled new/dup/suppressed/invalid; no writes (M2.2) | |
+| POST | `/leads/source/import` | persist selected candidates through the shared gate (re-checked server-side) + enqueue enrich (M2.2) | ✅ |
 | POST | `/leads/{id}/suppress` | manual suppress — stops mail, keeps the row (idempotent) | ✅ |
 | DELETE | `/leads/{id}/erase` | GDPR erase — full multi-store cascade (M0.4, §11-C2) | ✅ admin |
 | GET/GET | `/campaigns`, `/campaigns/{id}` | list / fetch | |
@@ -351,6 +364,7 @@ auth headers).
 |---|---|---|---|
 | Overview `/` | `app/page.tsx` | Metric cards (Sent, Reply rate, Interested, Copy blocked), "Needs attention" (interested + review), pipeline state bars, mailbox health | none |
 | Leads | `app/leads/page.tsx` + `leads/*` | CSV import, status/min-ICP filters (URL-driven), table with score-breakdown popover (cosine/rule/matched keyword/scoring campaign), source column with enrichment-provenance popover (fetched on open, M2.1), per-row suppress/erase | ✅ import, suppress, erase (typed-confirm), filter refetch (M1.3), provenance fetch (M2.1) |
+| Find leads | `app/find-leads/page.tsx` + `leads/FindLeads` | Provider-branded ICP search form → gate-labeled preview table → import selected; configure-me empty state when no source is set (M2.2) | ✅ search + import (browser POST); honest per-row new/dup/suppressed/no-email labels |
 | Review | `app/review/page.tsx` + `ReviewQueue` | Blocked-copy cards (validator errors + rejected slots → retry/skip/kill) and uncertain-classification cards (reply + approve/override) | ✅ reviewAction + reclassify→resolve (browser POST, M1.3) |
 | Inbox | `app/inbox/page.tsx` + `InboxView` | Thread list/detail, label filter tabs | ✅ filter refetch + **reclassify** (browser POST) |
 | Campaigns | `app/campaigns/page.tsx` + `CampaignActions` | Card per campaign | ✅ **Activate/Pause** (browser POST) |
@@ -396,6 +410,9 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `enrichment_providers` | "" (enrichment disabled — verify-only) | config |
 | `apollo_api_key` / `hunter_api_key` | "" (a listed provider with no key is skipped) | config |
 | Enrichment provider confidence | apollo 0.9 / hunter 0.85 (fixed; providers report none per-field) | `ingest/enrichment.py` |
+| `lead_source_providers` | "" (sourcing disabled) | config |
+| `lead_source_webhook_url` | "" (https only; SSRF-guarded) | config |
+| Source search cap | `limit ≤ 50` per search; ≤ 50 candidates imported | `schemas.py` / `sourcing.py` |
 | Fuzzy grounding threshold (entities only) | 90.0 | `validator.py:14` |
 | Numeric grounding | exact match after normalization; suffixes k/m/b/bn + thousand/million/billion; symbols $€£ value-interchangeable; percent strict | `validator.py normalize_numeric` |
 | Subject/body/grade caps | 7 words / 90 words / grade 8 | `validator.py:15-17` |

@@ -7,6 +7,7 @@ import { useTransition } from "react";
 const NAV = [
   { href: "/", label: "Overview" },
   { href: "/leads", label: "Leads" },
+  { href: "/find-leads", label: "Find leads" },
   { href: "/inbox", label: "Inbox" },
   { href: "/review", label: "Review" },
   { href: "/campaigns", label: "Campaigns" },

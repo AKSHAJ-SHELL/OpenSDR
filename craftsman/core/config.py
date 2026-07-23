@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     hunter_api_key: str = ""
     enrichment_providers: str = ""
 
+    # Lead sourcing (M2.2) — BYO keys. `lead_source_providers` is the comma-separated set
+    # of enabled sources (e.g. "apollo,webhook"); empty = sourcing disabled. Apollo reuses
+    # `apollo_api_key`; the webhook source GETs `lead_source_webhook_url` (https only).
+    lead_source_providers: str = ""
+    lead_source_webhook_url: str = ""
+
     # Secrets
     craftsman_secret_key: str = ""
 
