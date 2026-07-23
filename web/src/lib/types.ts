@@ -152,10 +152,14 @@ export type VariantDetail = {
   trials: number;
 };
 
+export type Channel = "email" | "linkedin_task" | "call_task";
+
 export type Step = {
   id: string;
   step_order: number;
   wait_days: number;
+  channel: Channel;
+  skip_on_expire: boolean;
   variants: VariantDetail[];
 };
 
@@ -284,3 +288,55 @@ export type ReviewItem = {
 };
 
 export type ReviewAction = "retry" | "skip" | "kill" | "resolve";
+
+// ---------------------------------------------------------------- touch tasks (M3)
+
+export type CallBriefPayload = {
+  opener: string;
+  pain_hypotheses: string[];
+  objection_notes: string;
+};
+
+export type TaskPayload = {
+  message?: string;
+  char_count?: number;
+  slots?: Record<string, string>;
+  brief?: CallBriefPayload;
+};
+
+export type Task = {
+  id: string;
+  enrollment_id: string;
+  channel: "linkedin_task" | "call_task" | string;
+  step_order: number;
+  status: "open" | "done" | "skipped" | "expired" | "cancelled" | string;
+  outcome: string | null;
+  payload: TaskPayload;
+  due_at: string;
+  overdue: boolean;
+  created_at: string | null;
+  resolved_at: string | null;
+  lead_id: string | null;
+  lead_email: string | null;
+  lead_name: string | null;
+  lead_title: string | null;
+  linkedin_url: string | null;
+  phone: string | null;
+  company_name: string | null;
+  company_domain: string | null;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  brief_highlights: string[];
+};
+
+export type TimelineItem = {
+  kind: "email_sent" | "reply" | "task" | string;
+  at: string;
+  channel: string;
+  title: string;
+  detail: string | null;
+  classification: string | null;
+  status: string | null;
+  outcome: string | null;
+  campaign_name: string | null;
+};

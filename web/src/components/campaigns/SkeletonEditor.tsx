@@ -1,7 +1,12 @@
 "use client";
 
 import { useRef } from "react";
-import { checkSkeleton, KNOWN_SLOTS, previewSkeleton } from "@/lib/skeleton";
+import {
+  checkSkeleton,
+  knownSlots,
+  previewSkeleton,
+  type SkeletonChannel,
+} from "@/lib/skeleton";
 import type { SenderPersona } from "@/lib/types";
 
 /**
@@ -12,13 +17,15 @@ export function SkeletonEditor({
   value,
   onChange,
   persona,
+  channel = "email",
 }: {
   value: string;
   onChange: (next: string) => void;
   persona: SenderPersona | null;
+  channel?: SkeletonChannel;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const { errors, warnings } = checkSkeleton(value);
+  const { errors, warnings } = checkSkeleton(value, channel);
 
   function insertSlot(slot: string) {
     const el = textareaRef.current;
@@ -40,7 +47,7 @@ export function SkeletonEditor({
     <div className="grid gap-4 md:grid-cols-2">
       <div>
         <div className="flex flex-wrap gap-1.5">
-          {KNOWN_SLOTS.map((slot) => (
+          {knownSlots(channel).map((slot) => (
             <button
               key={slot}
               type="button"
@@ -82,6 +89,9 @@ export function SkeletonEditor({
   );
 }
 
-export function skeletonHasBlockingErrors(skeleton: string): boolean {
-  return checkSkeleton(skeleton).errors.length > 0;
+export function skeletonHasBlockingErrors(
+  skeleton: string,
+  channel: SkeletonChannel = "email",
+): boolean {
+  return checkSkeleton(skeleton, channel).errors.length > 0;
 }

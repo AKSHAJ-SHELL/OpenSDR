@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { api } from "@/lib/api";
-import type { CampaignDetail, Step, VariantDetail } from "@/lib/types";
+import type { CampaignDetail, Channel, Step, VariantDetail } from "@/lib/types";
+import type { SkeletonChannel } from "@/lib/skeleton";
 import { SkeletonEditor, skeletonHasBlockingErrors } from "./SkeletonEditor";
 
 const DEFAULT_SKELETON = `Subject: {{subject_hook}}
@@ -15,6 +16,23 @@ Hi {{first_name}},
 {{value_prop_bridge}} {{cta_question}}
 
 {{signature}}`;
+
+const DEFAULT_LINKEDIN_SKELETON =
+  "Hi {{first_name}}, {{personalization_hook}} {{value_bridge}} {{cta_question}}";
+
+const CHANNEL_LABELS: Record<Channel, string> = {
+  email: "Email · autonomous",
+  linkedin_task: "LinkedIn · human task",
+  call_task: "Call · human task",
+};
+
+function defaultSkeletonFor(channel: Channel): string {
+  return channel === "linkedin_task" ? DEFAULT_LINKEDIN_SKELETON : DEFAULT_SKELETON;
+}
+
+function skeletonChannel(channel: Channel): SkeletonChannel {
+  return channel === "linkedin_task" ? "linkedin_task" : "email";
+}
 
 const inputCls =
   "mt-1 w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-ink";
@@ -148,10 +166,12 @@ function FieldsCard({ campaign }: { campaign: CampaignDetail }) {
 function VariantCard({
   campaign,
   variant,
+  channel,
   onClone,
 }: {
   campaign: CampaignDetail;
   variant: VariantDetail;
+  channel: Channel;
   onClone: (skeleton: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -217,10 +237,11 @@ function VariantCard({
             value={skeleton}
             onChange={setSkeleton}
             persona={campaign.sender_persona}
+            channel={skeletonChannel(channel)}
           />
           <button
             type="button"
-            disabled={pending || skeletonHasBlockingErrors(skeleton)}
+            disabled={pending || skeletonHasBlockingErrors(skeleton, skeletonChannel(channel))}
             onClick={() =>
               run(
                 () => api.updateVariant(campaign.id, variant.id, { skeleton }),
@@ -269,12 +290,19 @@ function AddVariantForm({
         />
       </label>
       <div className="mt-3">
-        <SkeletonEditor value={skeleton} onChange={setSkeleton} persona={campaign.sender_persona} />
+        <SkeletonEditor
+          value={skeleton}
+          onChange={setSkeleton}
+          persona={campaign.sender_persona}
+          channel={skeletonChannel(step.channel)}
+        />
       </div>
       <div className="mt-3 flex gap-2">
         <button
           type="button"
-          disabled={pending || !name.trim() || skeletonHasBlockingErrors(skeleton)}
+          disabled={
+            pending || !name.trim() || skeletonHasBlockingErrors(skeleton, skeletonChannel(step.channel))
+          }
           onClick={() =>
             run(
               () =>
@@ -304,16 +332,43 @@ function AddVariantForm({
 function StepCard({ campaign, step }: { campaign: CampaignDetail; step: Step }) {
   const [waitDays, setWaitDays] = useState(String(step.wait_days));
   const [adding, setAdding] = useState(false);
-  const [addSkeleton, setAddSkeleton] = useState(DEFAULT_SKELETON);
+  const [addSkeleton, setAddSkeleton] = useState(defaultSkeletonFor(step.channel));
   const { pending, error, run } = useAction();
   const structureFrozen = campaign.enrollments > 0;
+  const isTask = step.channel !== "email";
+  const usesSkeleton = step.channel !== "call_task";
 
   return (
     <div className="rounded-[var(--radius)] border border-line bg-surface p-5 shadow-[var(--shadow)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="font-[family-name:var(--font-display)] text-base text-ink">
-          Step {step.step_order}
-        </h3>
+        <div className="flex items-center gap-2">
+          <h3 className="font-[family-name:var(--font-display)] text-base text-ink">
+            Step {step.step_order}
+          </h3>
+          <select
+            value={step.channel}
+            disabled={pending || structureFrozen || step.variants.length > 0}
+            title={
+              structureFrozen
+                ? "Structure is frozen while leads are enrolled"
+                : step.variants.length > 0
+                  ? "Delete this step's variants before changing the channel — skeletons don't port between channels"
+                  : undefined
+            }
+            onChange={(e) =>
+              run(() =>
+                api.updateStep(campaign.id, step.id, { channel: e.target.value as Channel }),
+              )
+            }
+            className="rounded-lg border border-line bg-bg px-2 py-1 text-xs font-medium text-ink outline-none focus:border-ink disabled:opacity-60"
+          >
+            {(Object.keys(CHANNEL_LABELS) as Channel[]).map((c) => (
+              <option key={c} value={c}>
+                {CHANNEL_LABELS[c]}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-muted">
             Wait
@@ -330,7 +385,11 @@ function StepCard({ campaign, step }: { campaign: CampaignDetail; step: Step }) 
             <button
               type="button"
               disabled={pending}
-              onClick={() => run(() => api.updateStep(campaign.id, step.id, Number(waitDays)))}
+              onClick={() =>
+                run(() =>
+                  api.updateStep(campaign.id, step.id, { wait_days: Number(waitDays) }),
+                )
+              }
               className={primaryBtn}
             >
               Save
@@ -348,39 +407,71 @@ function StepCard({ campaign, step }: { campaign: CampaignDetail; step: Step }) 
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3">
-        {step.variants.map((v) => (
-          <VariantCard
-            key={v.id}
-            campaign={campaign}
-            variant={v}
-            onClone={(skeleton) => {
-              setAddSkeleton(skeleton);
-              setAdding(true);
-            }}
+      {isTask ? (
+        <label className="mt-3 flex items-start gap-2 text-xs text-muted">
+          <input
+            type="checkbox"
+            checked={step.skip_on_expire}
+            disabled={pending}
+            onChange={(e) =>
+              run(() =>
+                api.updateStep(campaign.id, step.id, { skip_on_expire: e.target.checked }),
+              )
+            }
+            className="mt-0.5"
           />
-        ))}
-        {step.variants.length === 0 ? (
-          <p className="text-xs text-faint">
-            No variants yet — the campaign cannot activate until every step has at least one.
-          </p>
-        ) : null}
-      </div>
+          <span>
+            Auto-skip when nobody does the task — after the due window the sequence advances
+            without the touch. Off (default): the sequence holds and the task shows as
+            overdue until a human acts.
+          </span>
+        </label>
+      ) : null}
 
-      {adding ? (
-        <AddVariantForm
-          campaign={campaign}
-          step={step}
-          initialSkeleton={addSkeleton}
-          onDone={() => {
-            setAdding(false);
-            setAddSkeleton(DEFAULT_SKELETON);
-          }}
-        />
+      {usesSkeleton ? (
+        <>
+          <div className="mt-4 grid gap-3">
+            {step.variants.map((v) => (
+              <VariantCard
+                key={v.id}
+                campaign={campaign}
+                variant={v}
+                channel={step.channel}
+                onClone={(skeleton) => {
+                  setAddSkeleton(skeleton);
+                  setAdding(true);
+                }}
+              />
+            ))}
+            {step.variants.length === 0 ? (
+              <p className="text-xs text-faint">
+                No variants yet — the campaign cannot activate until every step has at least one.
+              </p>
+            ) : null}
+          </div>
+
+          {adding ? (
+            <AddVariantForm
+              campaign={campaign}
+              step={step}
+              initialSkeleton={addSkeleton}
+              onDone={() => {
+                setAdding(false);
+                setAddSkeleton(defaultSkeletonFor(step.channel));
+              }}
+            />
+          ) : (
+            <button type="button" onClick={() => setAdding(true)} className={`mt-3 ${ghostBtn}`}>
+              Add variant
+            </button>
+          )}
+        </>
       ) : (
-        <button type="button" onClick={() => setAdding(true)} className={`mt-3 ${ghostBtn}`}>
-          Add variant
-        </button>
+        <p className="mt-4 text-xs leading-relaxed text-faint">
+          Call steps need no variants. Craftsman generates a grounded call brief (opener,
+          pain hypotheses, objection notes) from the research brief and queues it on the
+          Tasks page for a human to call.
+        </p>
       )}
       <ActionError error={error} />
     </div>
@@ -389,20 +480,32 @@ function StepCard({ campaign, step }: { campaign: CampaignDetail; step: Step }) 
 
 function AddStep({ campaign }: { campaign: CampaignDetail }) {
   const [waitDays, setWaitDays] = useState("3");
+  const [channel, setChannel] = useState<Channel>("email");
   const { pending, error, run } = useAction();
   const structureFrozen = campaign.enrollments > 0;
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <button
         type="button"
         disabled={pending || structureFrozen}
         title={structureFrozen ? "Structure is frozen while leads are enrolled" : undefined}
-        onClick={() => run(() => api.addStep(campaign.id, Number(waitDays) || 0))}
+        onClick={() => run(() => api.addStep(campaign.id, Number(waitDays) || 0, channel))}
         className={ghostBtn}
       >
         Add step
       </button>
+      <select
+        value={channel}
+        onChange={(e) => setChannel(e.target.value as Channel)}
+        className="rounded-lg border border-line bg-bg px-2 py-1.5 text-xs font-medium text-ink outline-none focus:border-ink"
+      >
+        {(Object.keys(CHANNEL_LABELS) as Channel[]).map((c) => (
+          <option key={c} value={c}>
+            {CHANNEL_LABELS[c]}
+          </option>
+        ))}
+      </select>
       <label className="flex items-center gap-2 text-xs text-muted">
         after waiting
         <input

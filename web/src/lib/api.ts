@@ -1,6 +1,9 @@
 import type {
   ArmPosterior,
   Campaign,
+  Channel,
+  Task,
+  TimelineItem,
   CampaignCreate,
   CampaignDetail,
   CampaignUpdate,
@@ -110,6 +113,7 @@ export const api = {
     return get<Lead[]>(qs ? `/leads?${qs}` : "/leads");
   },
   importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
+  lead: (id: string) => get<Lead>(`/leads/${id}`),
   leadEnrichments: (id: string) => get<LeadEnrichment[]>(`/leads/${id}/enrichments`),
   scoringWeights: () => get<ScoringWeights>("/leads/scoring-weights"),
   leadSignals: (id: string) => get<LeadSignal[]>(`/leads/${id}/signals`),
@@ -137,10 +141,13 @@ export const api = {
   createCampaign: (body: CampaignCreate) => post<Campaign>("/campaigns", body),
   updateCampaign: (id: string, body: CampaignUpdate) =>
     patch<CampaignDetail>(`/campaigns/${id}`, body),
-  addStep: (campaignId: string, waitDays: number) =>
-    post<Step>(`/campaigns/${campaignId}/steps`, { wait_days: waitDays }),
-  updateStep: (campaignId: string, stepId: string, waitDays: number) =>
-    patch<Step>(`/campaigns/${campaignId}/steps/${stepId}`, { wait_days: waitDays }),
+  addStep: (campaignId: string, waitDays: number, channel: Channel = "email") =>
+    post<Step>(`/campaigns/${campaignId}/steps`, { wait_days: waitDays, channel }),
+  updateStep: (
+    campaignId: string,
+    stepId: string,
+    body: { wait_days?: number; channel?: Channel; skip_on_expire?: boolean },
+  ) => patch<Step>(`/campaigns/${campaignId}/steps/${stepId}`, body),
   deleteStep: (campaignId: string, stepId: string) =>
     del<void>(`/campaigns/${campaignId}/steps/${stepId}`),
   addVariant: (campaignId: string, body: { step_order: number; name: string; skeleton: string }) =>
@@ -160,6 +167,17 @@ export const api = {
   pause: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/pause`),
   reclassify: (msgId: string, label: string) =>
     post<InboxMessage>(`/inbox/${msgId}/reclassify`, { label }),
+  tasks: (params?: { status?: string; channel?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.channel) q.set("channel", params.channel);
+    const qs = q.toString();
+    return get<Task[]>(qs ? `/tasks?${qs}` : "/tasks");
+  },
+  completeTask: (id: string, outcome?: string) =>
+    post<Task>(`/tasks/${id}/complete`, outcome ? { outcome } : {}),
+  skipTask: (id: string) => post<Task>(`/tasks/${id}/skip`),
+  leadTimeline: (leadId: string) => get<TimelineItem[]>(`/leads/${leadId}/timeline`),
 };
 
 export function apiBase() {

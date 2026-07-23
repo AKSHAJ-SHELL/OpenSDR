@@ -242,3 +242,71 @@ def validate_fill(
             errors.append(f"reading grade {grade:.1f} (max {MAX_READING_GRADE:.0f}) — use shorter words and sentences")
 
     return ValidationResult(ok=not errors, errors=errors)
+
+
+def validate_task_fill(
+    *,
+    slots: dict[str, str],
+    rendered_text: str,
+    grounding_sources: list,
+    max_chars: int | None = None,
+    per_slot_word_caps: dict[str, int] | None = None,
+    check_grade: bool = True,
+) -> ValidationResult:
+    """The four gates for assisted-channel content (M3.2/M3.3) — same grounding
+    corpus machinery, same banned phrases, channel-appropriate caps.
+
+    LinkedIn notes: char cap on the rendered text (max_chars), grade check on.
+    Call briefs: per-slot word caps, grade check off (structured fragments, not prose).
+    `validate_fill` (email) is untouched — email caps are not renegotiated here.
+    """
+    errors: list[str] = []
+    corpus: list[str] = []
+    for src in grounding_sources:
+        corpus.extend(_collect_strings(src))
+
+    # 1. grounding — identical two-path policy: entities fuzzy, numbers exact
+    corpus_numerics = _corpus_numerics(corpus)
+    for slot_name, value in slots.items():
+        proper, numbers = extract_claims(value)
+        for claim in proper:
+            if not _grounded(claim, corpus):
+                errors.append(
+                    f"slot '{slot_name}': claim '{claim}' not found in research brief "
+                    f"or campaign config — remove it or replace with grounded fact"
+                )
+        for token in numbers:
+            norm = normalize_numeric(token)
+            if norm is None or not _numeric_grounded(norm[0], norm[1], corpus_numerics):
+                errors.append(
+                    f"slot '{slot_name}': number '{token}' has no exact match in the "
+                    f"research brief or campaign config — numbers are never fuzzy-matched"
+                )
+
+    # 2. banned phrases + em-dash spam — checked over slots AND the rendered text
+    joined = (" ".join(slots.values()) + " " + rendered_text).lower()
+    for phrase in BANNED_PHRASES:
+        if phrase in joined:
+            errors.append(f"banned phrase: '{phrase}'")
+    if "—" in joined or "–" in joined:
+        errors.append("em-dash/en-dash detected — rewrite without it")
+
+    # 3. caps — per channel
+    if max_chars is not None and len(rendered_text) > max_chars:
+        errors.append(
+            f"rendered message is {len(rendered_text)} chars (max {max_chars})"
+        )
+    for slot_name, cap in (per_slot_word_caps or {}).items():
+        words = len(slots.get(slot_name, "").split())
+        if words > cap:
+            errors.append(f"slot '{slot_name}' is {words} words (max {cap})")
+
+    # 4. reading grade (LinkedIn prose only; briefs are fragments)
+    if check_grade and rendered_text.strip():
+        grade = textstat.flesch_kincaid_grade(rendered_text)
+        if grade > MAX_READING_GRADE:
+            errors.append(
+                f"reading grade {grade:.1f} (max {MAX_READING_GRADE:.0f}) — use shorter words and sentences"
+            )
+
+    return ValidationResult(ok=not errors, errors=errors)

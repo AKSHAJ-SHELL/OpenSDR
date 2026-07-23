@@ -1,0 +1,1 @@
+Hi {{first_name}}, {{personalization_hook}} {{value_bridge}} {{cta_question}}

@@ -229,6 +229,24 @@ def list_enrichments(lead_id: uuid.UUID, db: Session = Depends(get_db)):
 
 
 @router.get(
+    "/{lead_id}", response_model=LeadOut, dependencies=[Depends(require_scope("read"))]
+)
+def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Single-lead read-back for the lead-detail page (M3.1)."""
+    from craftsman.scoring.icp import matched_seniority_keyword
+
+    lead = db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(404, "lead not found")
+    item = LeadOut.model_validate(lead)
+    if lead.icp_scored_campaign_id:
+        campaign = db.get(Campaign, lead.icp_scored_campaign_id)
+        item.icp_scored_campaign_name = campaign.name if campaign else None
+    item.icp_matched_keyword = matched_seniority_keyword(lead.title)
+    return item
+
+
+@router.get(
     "/{lead_id}/timeline",
     response_model=list[TimelineItemOut],
     dependencies=[Depends(require_scope("read"))],
