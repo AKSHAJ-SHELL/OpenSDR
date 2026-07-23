@@ -11,7 +11,7 @@
 > policy-escalated."* Option C (LLM free-composed replies) rejected.
 > **Q2 — Second gate (draft quality after M4.1) → evidence-at-the-end.** Real-LLM draft
 > outputs against the classifier eval fixtures are recorded verbatim in
-> `findings/09-m4-draft-quality.md` for human review with the final report; human can
+> `findings/10-m4-draft-quality.md` for human review with the final report; human can
 > veto before merge. (TESTING.md §3.4 requires asking before real-key runs — approved
 > here, scope: draft generation over `tests/fixtures/replies.json` reply bodies.)
 
@@ -187,7 +187,7 @@ escalates; legal/GDPR → never a draft.
 After commit 1: run real-LLM (`LLM_PROVIDER=anthropic`) draft generation over every
 interested/objection fixture in `tests/fixtures/replies.json`; record each fixture →
 skeleton chosen → slots → rendered draft → validator verdict, verbatim, in
-`findings/09-m4-draft-quality.md`. No pass/fail authority claimed — it is evidence for
+`findings/10-m4-draft-quality.md`. No pass/fail authority claimed — it is evidence for
 the human veto before merge.
 
 ## Non-goals (explicit)

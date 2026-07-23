@@ -47,7 +47,10 @@ else). For an interested reply this field is ignored; set it to "other".
 actually said, in plain words. No flattery, no "great question".
 4. answer_bridge: ONE sentence moving things forward using only grounded facts.
 5. cta_question: ONE short question with a tiny ask. Never ask for "30 minutes".
-6. Total across all slots under 60 words. No em-dashes. No exclamation marks. Write \
+6. Never convert word-form numbers into digits: if a source says "a third", write \
+"a third", not "33%". A digit or percent you write must appear digit-for-digit in \
+the sources.
+7. Total across all slots under 60 words. No em-dashes. No exclamation marks. Write \
 like a busy person, not a marketer."""
 
 
