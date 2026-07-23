@@ -73,6 +73,29 @@ Key modules:
 | `craftsman/llm/` | Provider-agnostic structured-output client (Claude default, Ollama fallback, mock for tests) |
 | `web/` | Next.js dashboard (Gojiberry-style agent UI) |
 
+## Deliverability (read this before you send)
+
+The hard part of cold outbound isn't the AI — it's landing in the inbox. Three things
+decide that, and the dashboard's **Deliverability** page checks all three per mailbox by
+live DNS lookup, with copy-paste values for whatever's missing:
+
+- **Send from a subdomain, never your primary domain.** Put outbound on a dedicated
+  sender like `outbound.yourco.com` with its own auth records. A bad reputation stretch
+  then stays contained and never poisons the domain your real mail and website depend on.
+  The page flags a mailbox whose domain looks primary.
+- **SPF / DKIM / DMARC.** SPF and DMARC get concrete recommended records (DMARC is
+  generated for you; SPF is a template with your provider's `include:`). DKIM keys are
+  minted by your sending provider, so we verify yours (set the selector on the mailbox, or
+  we probe the common ones) but never fabricate a key. A resolver hiccup reads as
+  "couldn't check", never a false "missing".
+- **Warm up slowly.** Every new mailbox ramps automatically — 10 → 20 → 30 → 40 → full
+  daily limit, one stage per calendar day. The page shows where each mailbox is on that
+  ramp and how much of today's cap is spent. This is enforced in the send path
+  (`craftsman/sender/warmup.py`), not just advice.
+
+None of this is optional-nice-to-have: bounces and unauthenticated mail are the fastest
+way to burn a domain, which is why verification gates enrollment and warmup gates volume.
+
 ## Quickstart
 
 ```bash
@@ -98,9 +121,37 @@ docker compose up -d
 
 # import leads (Bearer key required)
 curl -F "file=@leads.csv" -H "Authorization: Bearer $KEY" http://localhost:8000/leads/import
-
-# create a campaign, add variants, activate — see /docs (also key-gated)
 ```
+
+Then build the campaign in the dashboard: **Campaigns → New campaign** (ICP, value
+prop, sender persona, step cadence), add at least one skeleton variant per step in the
+builder — placeholders are validated as you type and previewed with sample fills — then
+**dry-run before you activate**: the builder's Dry run panel routes the real pipeline
+(research → variant pick → slot-fill → validator) for your top-scoring sample leads and
+delivers to Mailpit only, never a real inbox. You see the exact emails and validator
+verdicts the live campaign would produce; Activate asks for an explicit override if no
+dry-run has completed. Everything is equally scriptable against the API (`/docs`,
+key-gated); once a variant's bandit arm has recorded trials its skeleton is frozen —
+clone it as a new variant instead of rewriting measured history.
+
+**Leads** (dashboard → **Leads**) is where day-to-day operators live. Import a CSV
+inline, filter by status or a minimum ICP score, and read *why* a lead scored what it
+did: hover the score bar for the honest breakdown — `cosine × 0.7` (semantic fit to your
+ICP) plus `rule × 0.3` (title seniority), the keyword that matched, and which campaign's
+activation produced the score. Leads scored before component tracking shipped say so
+rather than inventing a breakdown. Per-lead **Suppress** stops all mail while keeping the
+row (needs `operate`); **Erase** is the irreversible GDPR delete and needs `admin` —
+which the dashboard key deliberately lacks by default, so the button explains the 403
+instead of failing silently. Erase from an admin key, or widen the dashboard key's scope
+only if you accept the blast radius.
+
+**Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
+*blocked copy* (the validator rejected both generation attempts, so the enrollment is
+stuck — you get the validator's errors, the rejected slot text, and Retry / Skip step /
+Kill) and *uncertain classifications* (a reply the classifier scored below threshold, so
+no state change happened — you see the reply and Approve the model's label or override
+it). Approving applies the label at full confidence and clears the item **without**
+re-driving the sequence, so a human call never silently advances the campaign.
 
 > **⚠️ Exposure warning.** The API and dashboard bind to `localhost` by default.
 > **Do not expose port 8000 or 3000 to the internet.** Every API route now requires a
@@ -112,11 +163,17 @@ Local app processes (Ollama on the host): infra via `docker compose up -d postgr
 
 ```bash
 pip install -e ".[dev]"
-uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000
+uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000 --reload
 celery -A craftsman.workers.celery_app worker -Q research,generate,send,inbox,enrich,settle -l info
 celery -A craftsman.workers.celery_app beat -l info
 cd web && npm install && npm run dev   # http://localhost:3000
 ```
+
+> **`--reload` matters in dev.** `next dev` hot-reloads the dashboard, but uvicorn and
+> Celery do not reload on their own. Without it you can end up with a new dashboard
+> talking to an API running yesterday's code — new endpoints 404/405 and pages fail in
+> confusing ways. **Celery workers never auto-reload**: restart them by hand after
+> changing anything under `craftsman/workers/`, `research/`, `copywriter/`, or `sender/`.
 
 ## Authentication
 

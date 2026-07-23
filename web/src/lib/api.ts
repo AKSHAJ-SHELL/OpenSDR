@@ -1,11 +1,21 @@
 import type {
   ArmPosterior,
   Campaign,
+  CampaignCreate,
+  CampaignDetail,
+  CampaignUpdate,
+  DeliverabilityReport,
+  DryRun,
+  ImportResult,
   InboxMessage,
   Lead,
   Mailbox,
   Overview,
+  ReviewAction,
   ReviewItem,
+  Step,
+  VariantDetail,
+  VariantUpdate,
 } from "./types";
 
 const IS_SERVER = typeof window === "undefined";
@@ -42,9 +52,9 @@ async function get<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
+async function send<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(target(path), {
-    method: "POST",
+    method,
     cache: "no-store",
     headers: {
       Accept: "application/json",
@@ -57,18 +67,75 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     const detail = await res.text();
     throw new Error(`${res.status} ${res.statusText}: ${detail}`);
   }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+const post = <T,>(path: string, body?: unknown) => send<T>("POST", path, body);
+const patch = <T,>(path: string, body?: unknown) => send<T>("PATCH", path, body);
+const del = <T,>(path: string) => send<T>("DELETE", path);
+
+/** Multipart upload. Content-Type is deliberately unset so the browser adds the
+ *  boundary; the proxy forwards whatever it receives. */
+async function upload<T>(path: string, file: File): Promise<T> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(target(path), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", ...authHeaders() },
+    body,
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+  }
   return res.json() as Promise<T>;
 }
 
 export const api = {
   overview: () => get<Overview>("/analytics/overview"),
-  leads: (status?: string) =>
-    get<Lead[]>(status ? `/leads?status=${encodeURIComponent(status)}` : "/leads"),
+  leads: (params?: { status?: string; score_gte?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.score_gte != null) q.set("score_gte", String(params.score_gte));
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return get<Lead[]>(qs ? `/leads?${qs}` : "/leads");
+  },
+  importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
+  suppressLead: (id: string) => post<void>(`/leads/${id}/suppress`),
+  eraseLead: (id: string) => del<void>(`/leads/${id}/erase`),
+  reviewAction: (itemId: string, action: ReviewAction) =>
+    post<{ resolved: boolean; action: string; new_state: string | null }>(
+      `/inbox/review/${itemId}/action`,
+      { action },
+    ),
   inbox: (label?: string) =>
     get<InboxMessage[]>(label ? `/inbox?label=${encodeURIComponent(label)}` : "/inbox"),
   review: () => get<ReviewItem[]>("/inbox/review"),
   campaigns: () => get<Campaign[]>("/campaigns"),
+  campaignDetail: (id: string) => get<CampaignDetail>(`/campaigns/${id}`),
+  createCampaign: (body: CampaignCreate) => post<Campaign>("/campaigns", body),
+  updateCampaign: (id: string, body: CampaignUpdate) =>
+    patch<CampaignDetail>(`/campaigns/${id}`, body),
+  addStep: (campaignId: string, waitDays: number) =>
+    post<Step>(`/campaigns/${campaignId}/steps`, { wait_days: waitDays }),
+  updateStep: (campaignId: string, stepId: string, waitDays: number) =>
+    patch<Step>(`/campaigns/${campaignId}/steps/${stepId}`, { wait_days: waitDays }),
+  deleteStep: (campaignId: string, stepId: string) =>
+    del<void>(`/campaigns/${campaignId}/steps/${stepId}`),
+  addVariant: (campaignId: string, body: { step_order: number; name: string; skeleton: string }) =>
+    post<VariantDetail>(`/campaigns/${campaignId}/variants`, body),
+  updateVariant: (campaignId: string, variantId: string, body: VariantUpdate) =>
+    patch<VariantDetail>(`/campaigns/${campaignId}/variants/${variantId}`, body),
+  startDryRun: (campaignId: string, n: number) =>
+    post<DryRun>(`/campaigns/${campaignId}/dry-run`, { n }),
+  dryRuns: (campaignId: string) => get<DryRun[]>(`/campaigns/${campaignId}/dry-runs`),
+  dryRun: (campaignId: string, runId: string) =>
+    get<DryRun>(`/campaigns/${campaignId}/dry-runs/${runId}`),
   mailboxes: () => get<Mailbox[]>("/mailboxes"),
+  deliverability: (mailboxId: string) =>
+    get<DeliverabilityReport>(`/mailboxes/${mailboxId}/deliverability`),
   bandit: (campaignId: string) => get<ArmPosterior[]>(`/campaigns/${campaignId}/bandit`),
   activate: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/activate`),
   pause: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/pause`),

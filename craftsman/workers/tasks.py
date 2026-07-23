@@ -7,7 +7,16 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from craftsman.core.db import session_scope
-from craftsman.core.models import Company, Enrollment, Lead, Mailbox, Message, SequenceStep, Variant
+from craftsman.core.models import (
+    Campaign,
+    Company,
+    Enrollment,
+    Lead,
+    Mailbox,
+    Message,
+    SequenceStep,
+    Variant,
+)
 from craftsman.core.schemas import ResearchBrief
 from craftsman.llm.client import get_llm
 from craftsman.workers.celery_app import app
@@ -229,6 +238,118 @@ def generate_and_send(self, enrollment_id: str):
         enrollment.current_step = step_order  # record which step was actually sent
         apply_event(db, enrollment, Event.SEND_OK, detail={"step": step_order})
         schedule_next_step(db, enrollment, wait_days, lead.timezone)
+
+
+# ------------------------------------------------------------------ dry run (M1.2)
+
+
+@app.task
+def run_dry_run(dry_run_id: str):
+    """Preflight: the real pipeline (research → bandit pick → fill → validate → build →
+    send) for N sample leads, delivered to Mailpit only. By construction this touches
+    none of the production state: no enrollments, no Message rows, no campaign slots,
+    no mailbox counters, no bandit updates, no unsubscribe tokens, and lead scores are
+    computed in memory without being persisted."""
+    from craftsman.bandit.thompson import Arm, pick_arm
+    from craftsman.compliance.suppression import is_suppressed
+    from craftsman.copywriter.fill import generate_copy
+    from craftsman.core.models import DryRun, DryRunItem
+    from craftsman.research.agent import research_company
+    from craftsman.scoring.embeddings import get_embedder
+    from craftsman.scoring.icp import icp_score, lead_text
+    from craftsman.sender.smtp import PreparedEmail, build_dry_run_email, deliver_to_mailpit
+
+    with session_scope() as db:
+        run = db.get(DryRun, dry_run_id)
+        if run is None or run.status != "running":
+            return
+        campaign = db.get(Campaign, run.campaign_id)
+
+        try:
+            step = db.scalar(
+                select(SequenceStep).where(
+                    SequenceStep.campaign_id == campaign.id, SequenceStep.step_order == 1
+                )
+            )
+            variants = list(
+                db.scalars(
+                    select(Variant).where(Variant.step_id == step.id, Variant.active)
+                ).all()
+            ) if step else []
+            if not variants:
+                raise RuntimeError("no active variants on step 1")
+
+            embedder = get_embedder()
+            icp_emb = (
+                list(campaign.icp_embedding)
+                if campaign.icp_embedding is not None
+                else _run(embedder.embed([campaign.icp_description]))[0]
+            )
+
+            # Score candidates in memory — unlike activate, nothing is persisted.
+            candidates = []
+            for lead in db.scalars(
+                select(Lead).where(Lead.email_verified.is_(True), Lead.status == "verified")
+            ).all():
+                if is_suppressed(db, lead.email):
+                    continue
+                company = db.get(Company, lead.company_id) if lead.company_id else None
+                text = lead_text(lead.title, company.name if company else None, None)
+                lead_emb = _run(embedder.embed([text]))[0]
+                candidates.append((icp_score(lead_emb, icp_emb, lead.title), lead, company))
+            candidates.sort(key=lambda c: c[0], reverse=True)
+
+            for score, lead, company in candidates[: run.requested_n]:
+                item = DryRunItem(
+                    dry_run_id=run.id,
+                    lead_id=lead.id,
+                    lead_email=lead.email,
+                    lead_name=" ".join(
+                        x for x in [lead.first_name, lead.last_name] if x
+                    ) or None,
+                    icp_score=score,
+                )
+                db.add(item)
+                try:
+                    brief = _run(research_company(db, company, get_llm()))
+                    arms = [Arm(id=str(v.id), alpha=v.alpha, beta=v.beta) for v in variants]
+                    chosen = next(v for v in variants if str(v.id) == pick_arm(arms).id)
+                    item.variant_id = chosen.id
+                    item.variant_name = chosen.name
+                    copy = _run(
+                        generate_copy(
+                            llm=get_llm(),
+                            brief=brief,
+                            skeleton=chosen.skeleton,
+                            value_prop=campaign.value_prop,
+                            persona=campaign.sender_persona or {},
+                            first_name=lead.first_name or "",
+                        )
+                    )
+                    item.validator_ok = copy.ok
+                    if copy.ok:
+                        item.subject, item.body = copy.subject, copy.body
+                        prepared = PreparedEmail(
+                            subject=copy.subject, body=copy.body, to_email=lead.email
+                        )
+                        _run(deliver_to_mailpit(build_dry_run_email(prepared)))
+                        item.delivered = True
+                    else:
+                        item.validator_errors = copy.validation.errors
+                except Exception as e:  # noqa: BLE001 — a bad lead never kills the run
+                    item.error = str(e)
+                db.add(item)
+                db.commit()  # each item durable as it lands, so the UI can stream
+
+            run.status = "complete"
+            if not candidates:
+                run.error = "no verified, unsuppressed leads to sample"
+        except Exception as e:  # noqa: BLE001
+            log.warning("dry run %s failed: %s", dry_run_id, e)
+            run.status = "failed"
+            run.error = str(e)
+        run.finished_at = datetime.now(timezone.utc)
+        db.add(run)
 
 
 # ------------------------------------------------------------------ enrich

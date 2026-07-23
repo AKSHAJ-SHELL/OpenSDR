@@ -52,6 +52,7 @@ app.conf.update(
     task_routes={
         "craftsman.workers.tasks.enrich_lead": {"queue": "enrich"},
         "craftsman.workers.tasks.research_enrollment": {"queue": "research"},
+        "craftsman.workers.tasks.run_dry_run": {"queue": "research"},
         "craftsman.workers.tasks.generate_and_send": {"queue": "send"},
         "craftsman.workers.tasks.poll_inboxes": {"queue": "inbox"},
         "craftsman.workers.tasks.settle_bandit": {"queue": "settle"},

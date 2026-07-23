@@ -42,6 +42,7 @@ services:
       DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
       REDIS_URL: redis://redis:6379/0
       MAILPIT_URL: http://mailpit:8025
+      MAILPIT_SMTP_HOST: mailpit
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +59,7 @@ services:
       DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:-craftsman}@postgres:5432/craftsman
       REDIS_URL: redis://redis:6379/0
       MAILPIT_URL: http://mailpit:8025
+      MAILPIT_SMTP_HOST: mailpit
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     depends_on:
       postgres:

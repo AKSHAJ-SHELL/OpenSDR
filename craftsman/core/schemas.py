@@ -64,8 +64,37 @@ class LeadOut(BaseModel):
     icp_score: float | None
     email_verified: bool
     source: str | None
+    # Score provenance (M1.3). NULL on leads scored before this was tracked, or never
+    # scored — the UI says so instead of fabricating a breakdown.
+    icp_cosine: float | None = None
+    icp_rule: float | None = None
+    icp_scored_at: datetime | None = None
+    icp_scored_campaign_id: uuid.UUID | None = None
+    icp_scored_campaign_name: str | None = None
+    icp_matched_keyword: str | None = None  # derived from title at read time
 
     model_config = {"from_attributes": True}
+
+
+class ReviewItemOut(BaseModel):
+    """A review-queue item with enough context to act on it.
+
+    `message_id` is what makes a `classification` item actionable (reclassify targets a
+    message); `enrollment_id` is what makes a `copywriter` item actionable (retry/skip/kill).
+    """
+
+    id: uuid.UUID
+    kind: str
+    message_id: uuid.UUID | None
+    enrollment_id: uuid.UUID | None
+    payload: dict | None
+    created_at: datetime | None
+    lead_email: str | None = None
+    lead_name: str | None = None
+    campaign_name: str | None = None
+    enrollment_state: str | None = None
+    message_body: str | None = None
+    message_subject: str | None = None
 
 
 class CampaignCreate(BaseModel):
@@ -95,7 +124,10 @@ class VariantCreate(BaseModel):
     step_order: int
     name: str
     skeleton: str
-    slot_schema: dict
+    slot_schema: dict | None = Field(
+        default=None,
+        description="Optional; derived from the skeleton's placeholders when omitted.",
+    )
 
 
 class VariantOut(BaseModel):
@@ -108,6 +140,87 @@ class VariantOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class VariantUpdate(BaseModel):
+    name: str | None = None
+    active: bool | None = None
+    skeleton: str | None = Field(
+        default=None,
+        description="Editable only while the arm has zero trials; clone a new variant otherwise.",
+    )
+
+
+class VariantDetailOut(VariantOut):
+    skeleton: str
+    slot_schema: dict
+    trials: int
+
+
+class StepOut(BaseModel):
+    id: uuid.UUID
+    step_order: int
+    wait_days: int
+    variants: list[VariantDetailOut]
+
+    model_config = {"from_attributes": True}
+
+
+class StepCreate(BaseModel):
+    wait_days: int = Field(ge=0)
+
+
+class StepUpdate(BaseModel):
+    wait_days: int = Field(ge=0)
+
+
+class CampaignDetailOut(CampaignOut):
+    sender_persona: dict | None = None
+    enrollments: int = Field(description="Enrollment count; >0 freezes the sequence structure.")
+    steps: list[StepOut]
+
+
+class DryRunRequest(BaseModel):
+    n: int = Field(default=3, ge=1, le=10, description="Sample size; capped to bound LLM spend.")
+
+
+class DryRunItemOut(BaseModel):
+    id: uuid.UUID
+    lead_email: str
+    lead_name: str | None
+    icp_score: float | None
+    variant_name: str | None
+    subject: str | None
+    body: str | None
+    validator_ok: bool | None
+    validator_errors: list | None
+    delivered: bool
+    error: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class DryRunOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    status: str
+    requested_n: int
+    error: str | None
+    created_at: datetime | None
+    finished_at: datetime | None
+    items: list[DryRunItemOut] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class CampaignUpdate(BaseModel):
+    """Partial update; status transitions stay on activate/pause."""
+
+    name: str | None = None
+    icp_description: str | None = None
+    value_prop: str | None = None
+    sender_persona: dict | None = None
+    daily_cap: int | None = Field(default=None, ge=1)
+
+
 class MailboxCreate(BaseModel):
     email: EmailStr
     smtp_host: str
@@ -117,6 +230,7 @@ class MailboxCreate(BaseModel):
     imap_host: str | None = None  # omit / empty for Mailpit-only sandboxes
     imap_port: int = 993
     imap_password: str | None = None
+    dkim_selector: str | None = None  # optional; else the DKIM check probes common selectors
     daily_limit: int = 40
 
 
@@ -126,6 +240,7 @@ class MailboxOut(BaseModel):
     smtp_host: str | None = None
     smtp_port: int | None = None
     imap_host: str | None = None
+    dkim_selector: str | None = None
     daily_limit: int
     sent_today: int
     warmup_stage: int
@@ -142,9 +257,58 @@ class MailboxUpdate(BaseModel):
     imap_host: str | None = None
     imap_port: int | None = None
     imap_password: str | None = None
+    dkim_selector: str | None = None
     daily_limit: int | None = None
     health: str | None = None
     clear_imap: bool = False  # drop IMAP so poller skips this box (Mailpit HTTP instead)
+
+
+# ---------------------------------------------------------------- deliverability (M1.4)
+
+
+class DnsRecordOut(BaseModel):
+    status: str  # pass | missing | error
+    record: str | None = None
+    recommended: str | None = None
+
+
+class DmarcOut(BaseModel):
+    status: str
+    policy: str | None = None
+    record: str | None = None
+    recommended: str | None = None
+
+
+class DkimOut(BaseModel):
+    status: str
+    selector: str | None = None
+    record: str | None = None
+
+
+class WarmupStepOut(BaseModel):
+    day: int
+    stage: int
+    cap: int
+
+
+class WarmupOut(BaseModel):
+    stage: int
+    effective_cap: int
+    daily_limit: int
+    sent_today: int
+    advances_per_day: int
+    schedule: list[WarmupStepOut]
+
+
+class DeliverabilityReport(BaseModel):
+    mailbox_id: uuid.UUID
+    email: str
+    domain: str
+    primary_domain_warning: bool
+    spf: DnsRecordOut
+    dmarc: DmarcOut
+    dkim: DkimOut
+    warmup: WarmupOut
 
 
 

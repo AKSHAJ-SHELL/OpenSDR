@@ -27,6 +27,18 @@ comparison?). Never ask for "30 minutes".
 like a busy person, not a marketer."""
 
 
+# The complete slot vocabulary a skeleton may use: the four LLM-filled slots
+# (fixed by the SlotFill schema) plus the two statically-filled ones.
+LLM_SLOTS: frozenset[str] = frozenset(SlotFill.model_fields)
+STATIC_SLOTS: frozenset[str] = frozenset({"first_name", "signature"})
+KNOWN_SKELETON_SLOTS: frozenset[str] = LLM_SLOTS | STATIC_SLOTS
+
+
+def skeleton_slots(skeleton: str) -> set[str]:
+    """Placeholder names used by a skeleton, per the same regex render_skeleton fails on."""
+    return set(re.findall(r"{{(\w+)}}", skeleton))
+
+
 def render_skeleton(skeleton: str, slots: dict[str, str], static: dict[str, str]) -> str:
     """Fill {{slot}} placeholders from LLM slots + static values (first_name, signature)."""
     out = skeleton

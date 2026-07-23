@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from craftsman.core.models import (
     AuditLog,
     Company,
+    DryRunItem,
     Enrollment,
     Lead,
     Message,
@@ -152,6 +153,10 @@ def erase_lead(db: Session, lead: Lead) -> None:
         select(UnsubscribeToken).where(UnsubscribeToken.lead_email == email.lower())
     ).all():
         db.delete(token)
+
+    # dry-run items hold the person's email and personalized copy
+    for item in db.scalars(select(DryRunItem).where(DryRunItem.lead_id == lead.id)).all():
+        db.delete(item)
 
     # scrub the cached research brief; deliberately no re-fetch (a re-scrape of a
     # team/news page could pull the person's name right back into the cache)

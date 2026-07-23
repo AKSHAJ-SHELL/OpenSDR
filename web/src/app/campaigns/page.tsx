@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { CampaignActions } from "@/components/campaigns/CampaignActions";
 import { ApiDown } from "@/components/ui/ApiDown";
@@ -6,6 +7,15 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { PageHeader } from "@/components/ui/PageHeader";
 
 export const dynamic = "force-dynamic";
+
+const newCampaignAction = (
+  <Link
+    href="/campaigns/new"
+    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
+  >
+    New campaign
+  </Link>
+);
 
 export default async function CampaignsPage() {
   let campaigns;
@@ -28,12 +38,13 @@ export default async function CampaignsPage() {
       <PageHeader
         title="Campaigns"
         subtitle="Sequences, variants, and activation. The agent only enrolls ICP-fit verified leads."
+        action={newCampaignAction}
       />
 
       {campaigns.length === 0 ? (
         <EmptyState
           title="No campaigns"
-          body="Create one via POST /campaigns, add variants per step, then activate."
+          body="Create one, add a variant per step, then dry-run and activate."
         />
       ) : (
         <div className="grid gap-4 animate-rise-delay-1">
@@ -46,7 +57,9 @@ export default async function CampaignsPage() {
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="font-[family-name:var(--font-display)] text-xl text-ink">
-                      {c.name}
+                      <Link href={`/campaigns/${c.id}`} className="hover:underline">
+                        {c.name}
+                      </Link>
                     </h2>
                     <Badge tone={statusTone(c.status)}>{c.status}</Badge>
                   </div>
@@ -67,7 +80,15 @@ export default async function CampaignsPage() {
                     Daily cap{" "}
                     <span className="font-semibold text-ink">{c.daily_cap}</span>
                   </div>
-                  <CampaignActions id={c.id} status={c.status} />
+                  <div className="flex items-center gap-2">
+                    <Link
+                      href={`/campaigns/${c.id}`}
+                      className="rounded-lg border border-line bg-bg px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:border-ink"
+                    >
+                      Edit
+                    </Link>
+                    <CampaignActions id={c.id} status={c.status} />
+                  </div>
                 </div>
               </div>
             </article>
