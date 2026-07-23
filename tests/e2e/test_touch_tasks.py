@@ -290,6 +290,48 @@ def test_suppressed_lead_task_is_cancelled_not_shown(client, db, make_key):
     assert task.outcome == "suppressed"
 
 
+def test_suppressed_lead_complete_is_409_and_cancels(client, db, make_key):
+    """M3 audit follow-up: the complete-path suppression check was in code but
+    untested — a lead suppressed after task generation must never be 'touched'."""
+    from craftsman.compliance.suppression import suppress
+
+    enr, task, lead, _ = _scenario(db)
+    suppress(db, lead.email, reason="unsubscribe")
+    token = make_key("operate")
+    r = client.post(f"/tasks/{task.id}/complete", json={}, headers=_auth(token))
+    assert r.status_code == 409
+    db.refresh(task)
+    assert task.status == "cancelled"
+    assert task.outcome == "suppressed"
+    db.refresh(enr)
+    assert enr.state == "awaiting_human_touch"  # cancel is not an advance
+
+
+def test_suppressed_lead_single_get_cancels(client, db, make_key):
+    """M3 audit follow-up: direct-ID reads re-check suppression like the list does."""
+    from craftsman.compliance.suppression import suppress
+
+    _, task, lead, _ = _scenario(db)
+    suppress(db, lead.email, reason="unsubscribe")
+    token = make_key("read")
+    r = client.get(f"/tasks/{task.id}", headers=_auth(token))
+    assert r.status_code == 200
+    assert r.json()["status"] == "cancelled"
+
+
+def test_suppressed_lead_skip_is_409_and_cancels(client, db, make_key):
+    """M3 audit follow-up: skip now matches complete — suppressed leads cancel."""
+    from craftsman.compliance.suppression import suppress
+
+    _, task, lead, _ = _scenario(db)
+    suppress(db, lead.email, reason="unsubscribe")
+    token = make_key("operate")
+    r = client.post(f"/tasks/{task.id}/skip", headers=_auth(token))
+    assert r.status_code == 409
+    db.refresh(task)
+    assert task.status == "cancelled"
+
+
 def test_overdue_flag(client, db, make_key):
     _scenario(db, due_in_hours=-4)
     token = make_key("read")
