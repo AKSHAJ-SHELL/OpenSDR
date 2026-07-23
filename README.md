@@ -73,6 +73,29 @@ Key modules:
 | `craftsman/llm/` | Provider-agnostic structured-output client (Claude default, Ollama fallback, mock for tests) |
 | `web/` | Next.js dashboard (Gojiberry-style agent UI) |
 
+## Deliverability (read this before you send)
+
+The hard part of cold outbound isn't the AI — it's landing in the inbox. Three things
+decide that, and the dashboard's **Deliverability** page checks all three per mailbox by
+live DNS lookup, with copy-paste values for whatever's missing:
+
+- **Send from a subdomain, never your primary domain.** Put outbound on a dedicated
+  sender like `outbound.yourco.com` with its own auth records. A bad reputation stretch
+  then stays contained and never poisons the domain your real mail and website depend on.
+  The page flags a mailbox whose domain looks primary.
+- **SPF / DKIM / DMARC.** SPF and DMARC get concrete recommended records (DMARC is
+  generated for you; SPF is a template with your provider's `include:`). DKIM keys are
+  minted by your sending provider, so we verify yours (set the selector on the mailbox, or
+  we probe the common ones) but never fabricate a key. A resolver hiccup reads as
+  "couldn't check", never a false "missing".
+- **Warm up slowly.** Every new mailbox ramps automatically — 10 → 20 → 30 → 40 → full
+  daily limit, one stage per calendar day. The page shows where each mailbox is on that
+  ramp and how much of today's cap is spent. This is enforced in the send path
+  (`craftsman/sender/warmup.py`), not just advice.
+
+None of this is optional-nice-to-have: bounces and unauthenticated mail are the fastest
+way to burn a domain, which is why verification gates enrollment and warmup gates volume.
+
 ## Quickstart
 
 ```bash

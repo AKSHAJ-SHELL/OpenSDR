@@ -230,6 +230,7 @@ class MailboxCreate(BaseModel):
     imap_host: str | None = None  # omit / empty for Mailpit-only sandboxes
     imap_port: int = 993
     imap_password: str | None = None
+    dkim_selector: str | None = None  # optional; else the DKIM check probes common selectors
     daily_limit: int = 40
 
 
@@ -239,6 +240,7 @@ class MailboxOut(BaseModel):
     smtp_host: str | None = None
     smtp_port: int | None = None
     imap_host: str | None = None
+    dkim_selector: str | None = None
     daily_limit: int
     sent_today: int
     warmup_stage: int
@@ -255,9 +257,58 @@ class MailboxUpdate(BaseModel):
     imap_host: str | None = None
     imap_port: int | None = None
     imap_password: str | None = None
+    dkim_selector: str | None = None
     daily_limit: int | None = None
     health: str | None = None
     clear_imap: bool = False  # drop IMAP so poller skips this box (Mailpit HTTP instead)
+
+
+# ---------------------------------------------------------------- deliverability (M1.4)
+
+
+class DnsRecordOut(BaseModel):
+    status: str  # pass | missing | error
+    record: str | None = None
+    recommended: str | None = None
+
+
+class DmarcOut(BaseModel):
+    status: str
+    policy: str | None = None
+    record: str | None = None
+    recommended: str | None = None
+
+
+class DkimOut(BaseModel):
+    status: str
+    selector: str | None = None
+    record: str | None = None
+
+
+class WarmupStepOut(BaseModel):
+    day: int
+    stage: int
+    cap: int
+
+
+class WarmupOut(BaseModel):
+    stage: int
+    effective_cap: int
+    daily_limit: int
+    sent_today: int
+    advances_per_day: int
+    schedule: list[WarmupStepOut]
+
+
+class DeliverabilityReport(BaseModel):
+    mailbox_id: uuid.UUID
+    email: str
+    domain: str
+    primary_domain_warning: bool
+    spf: DnsRecordOut
+    dmarc: DmarcOut
+    dkim: DkimOut
+    warmup: WarmupOut
 
 
 

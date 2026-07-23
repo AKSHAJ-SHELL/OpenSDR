@@ -147,9 +147,17 @@ export default async function OverviewPage() {
             </ul>
           )}
 
-          <h3 className="mb-3 mt-8 text-[11px] font-semibold uppercase tracking-[0.08em] text-faint">
-            Mailboxes
-          </h3>
+          <div className="mb-3 mt-8 flex items-center justify-between">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-faint">
+              Mailboxes
+            </h3>
+            <Link
+              href="/deliverability"
+              className="text-[11px] font-semibold text-muted underline-offset-2 transition-colors hover:text-ink hover:underline"
+            >
+              Deliverability →
+            </Link>
+          </div>
           {mailboxes.length === 0 ? (
             <p className="text-sm text-muted">
               Add a mailbox via API — point SMTP at Mailpit for local sends.

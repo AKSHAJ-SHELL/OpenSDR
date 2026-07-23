@@ -153,7 +153,7 @@ path (used by tests and the seed scripts). *(M0.2)*
 | **variants** | `step_id` FK, `name` (pain_led/trigger_led/question_led), `skeleton`, `slot_schema` (JSONB), `alpha`/`beta` (Beta prior 1/1), `active` | **Each variant = a bandit arm** |
 | **enrollments** | `lead_id`+`campaign_id` (unique), `state`, `current_step`, `next_action_at`; partial index on due states | One lead's journey through one campaign |
 | **messages** | `enrollment_id` FK, `variant_id` FK, `direction` (outbound/inbound), `mailbox_id`, subject/body, `smtp_message_id`, `classification`(+confidence), `bandit_outcome` (pending/success/failure), `outcome_deadline`, `sent_at` | Holds **reply content + email PII** |
-| **mailboxes** | `email` (unique), SMTP/IMAP host/port/user, `smtp_pass_enc`/`imap_pass_enc` (Fernet-encrypted), `daily_limit` (40), `sent_today`, `warmup_stage` (0..4), `health` (ok/degraded/paused), `hard_bounces_today` | Sending identities |
+| **mailboxes** | `email` (unique), SMTP/IMAP host/port/user, `smtp_pass_enc`/`imap_pass_enc` (Fernet-encrypted), `dkim_selector` (optional, M1.4), `daily_limit` (40), `sent_today`, `warmup_stage` (0..4), `health` (ok/degraded/paused), `hard_bounces_today` | Sending identities |
 | **suppression_list** | `email` (PK), `reason` (unsubscribe/bounce/manual/gdpr), `created_at` | Permanent do-not-contact |
 | **audit_log** | `enrollment_id`, from/to state, event, detail (JSONB) | Every state transition |
 | **review_queue** | `kind` (classification/copywriter), `message_id`/`enrollment_id`, `payload` (JSONB), `resolved` | Human-in-the-loop items |
@@ -324,7 +324,8 @@ single highest-severity gap for enterprise use.
 | GET | `/inbox/review` | unresolved review-queue items — typed, with `message_id` + lead/campaign/enrollment context (M1.3) | |
 | POST | `/inbox/review/{id}/action` | retry / skip / kill (re-drive) or **resolve** (clear without re-driving) | ✅ |
 | POST | `/inbox/{id}/reclassify` | human classification override (confidence 1.0) | ✅ |
-| POST/PATCH/GET | `/mailboxes` … | create/update/list mailboxes (stores encrypted secrets) | ✅ |
+| POST/PATCH/GET | `/mailboxes` … | create/update/list mailboxes (stores encrypted secrets; `dkim_selector` optional) | ✅ |
+| GET | `/mailboxes/{id}/deliverability` | live SPF/DKIM/DMARC status + copy-paste fixes + warmup ramp (M1.4) | |
 | GET | `/analytics/overview` | sent/replies/interested/reply_rate/rejections/state histograms | |
 | GET/POST | `/u/{token}` | unsubscribe (GET confirm page, POST RFC-8058 one-click) | ✅ |
 | GET | `/health` | liveness | |
@@ -345,6 +346,7 @@ auth headers).
 | Review | `app/review/page.tsx` + `ReviewQueue` | Blocked-copy cards (validator errors + rejected slots → retry/skip/kill) and uncertain-classification cards (reply + approve/override) | ✅ reviewAction + reclassify→resolve (browser POST, M1.3) |
 | Inbox | `app/inbox/page.tsx` + `InboxView` | Thread list/detail, label filter tabs | ✅ filter refetch + **reclassify** (browser POST) |
 | Campaigns | `app/campaigns/page.tsx` + `CampaignActions` | Card per campaign | ✅ **Activate/Pause** (browser POST) |
+| Deliverability | `app/deliverability/page.tsx` + `DeliverabilityCard` | Per-mailbox SPF/DKIM/DMARC status (live DNS) + copy-paste fixes, primary-domain warning, warmup ramp | read-only + copy button (M1.4) |
 | Analytics | `app/analytics/page.tsx` + `BanditChart` | Converging Beta-PDF charts + per-variant table (recharts) | ✅ live client render of real posteriors |
 
 Shared UI: `ApiDown`, `PageHeader`, `Metric`, `Badge` (status→tone), `EmptyState`. Note `web/AGENTS.md`

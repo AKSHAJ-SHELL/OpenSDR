@@ -196,6 +196,7 @@ class Mailbox(Base):
     imap_host: Mapped[str | None] = mapped_column(Text)
     imap_port: Mapped[int | None] = mapped_column(Integer)
     imap_pass_enc: Mapped[str | None] = mapped_column(Text)
+    dkim_selector: Mapped[str | None] = mapped_column(Text)  # authoritative for the DKIM check; else probed
     daily_limit: Mapped[int] = mapped_column(Integer, default=40)
     sent_today: Mapped[int] = mapped_column(Integer, default=0)
     warmup_stage: Mapped[int] = mapped_column(Integer, default=0)  # 0..4; caps ramp 10→20→30→40

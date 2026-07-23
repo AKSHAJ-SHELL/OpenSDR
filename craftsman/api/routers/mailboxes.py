@@ -8,7 +8,25 @@ from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.core.crypto import encrypt
 from craftsman.core.models import Mailbox
-from craftsman.core.schemas import MailboxCreate, MailboxOut, MailboxUpdate
+from craftsman.core.schemas import (
+    DeliverabilityReport,
+    DkimOut,
+    DmarcOut,
+    DnsRecordOut,
+    MailboxCreate,
+    MailboxOut,
+    MailboxUpdate,
+    WarmupOut,
+    WarmupStepOut,
+)
+from craftsman.deliverability.dns_auth import (
+    check_dkim,
+    check_dmarc,
+    check_spf,
+    looks_like_primary_domain,
+)
+from craftsman.ingest.verify import domain_of
+from craftsman.sender.warmup import effective_daily_limit, warmup_schedule
 
 router = APIRouter(prefix="/mailboxes", tags=["mailboxes"])
 
@@ -27,6 +45,7 @@ def add_mailbox(payload: MailboxCreate, db: Session = Depends(get_db)):
         imap_pass_enc=(
             encrypt(payload.imap_password or payload.smtp_password) if imap_host else None
         ),
+        dkim_selector=(payload.dkim_selector or "").strip() or None,
         daily_limit=payload.daily_limit,
     )
     db.add(box)
@@ -52,6 +71,8 @@ def update_mailbox(
         box.smtp_user = payload.smtp_user
     if payload.smtp_password is not None:
         box.smtp_pass_enc = encrypt(payload.smtp_password)
+    if payload.dkim_selector is not None:
+        box.dkim_selector = payload.dkim_selector.strip() or None
     if payload.daily_limit is not None:
         box.daily_limit = payload.daily_limit
     if payload.health is not None:
@@ -81,3 +102,43 @@ def update_mailbox(
 @router.get("", response_model=list[MailboxOut], dependencies=[Depends(require_scope("read"))])
 def list_mailboxes(db: Session = Depends(get_db)):
     return list(db.scalars(select(Mailbox)).all())
+
+
+@router.get(
+    "/{mailbox_id}/deliverability",
+    response_model=DeliverabilityReport,
+    dependencies=[Depends(require_scope("read"))],
+)
+def deliverability(mailbox_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Live SPF/DKIM/DMARC status for the mailbox's sending domain + its warmup ramp.
+    Read-only: the DNS lookups run server-side on every call (per-record timeout in
+    dns_auth), nothing is persisted."""
+    box = db.get(Mailbox, mailbox_id)
+    if box is None:
+        raise HTTPException(404, "mailbox not found")
+
+    domain = domain_of(box.email)
+    spf = check_spf(domain)
+    dmarc = check_dmarc(domain)
+    dkim = check_dkim(domain, box.dkim_selector)
+
+    return DeliverabilityReport(
+        mailbox_id=box.id,
+        email=box.email,
+        domain=domain,
+        primary_domain_warning=looks_like_primary_domain(domain),
+        spf=DnsRecordOut(status=spf.status, record=spf.record, recommended=spf.recommended),
+        dmarc=DmarcOut(
+            status=dmarc.status, policy=dmarc.policy, record=dmarc.record,
+            recommended=dmarc.recommended,
+        ),
+        dkim=DkimOut(status=dkim.status, selector=dkim.selector, record=dkim.record),
+        warmup=WarmupOut(
+            stage=box.warmup_stage,
+            effective_cap=effective_daily_limit(box.daily_limit, box.warmup_stage),
+            daily_limit=box.daily_limit,
+            sent_today=box.sent_today,
+            advances_per_day=1,
+            schedule=[WarmupStepOut(**s) for s in warmup_schedule(box.daily_limit)],
+        ),
+    )

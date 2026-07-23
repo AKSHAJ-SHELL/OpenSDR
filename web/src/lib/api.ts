@@ -4,6 +4,7 @@ import type {
   CampaignCreate,
   CampaignDetail,
   CampaignUpdate,
+  DeliverabilityReport,
   DryRun,
   ImportResult,
   InboxMessage,
@@ -133,6 +134,8 @@ export const api = {
   dryRun: (campaignId: string, runId: string) =>
     get<DryRun>(`/campaigns/${campaignId}/dry-runs/${runId}`),
   mailboxes: () => get<Mailbox[]>("/mailboxes"),
+  deliverability: (mailboxId: string) =>
+    get<DeliverabilityReport>(`/mailboxes/${mailboxId}/deliverability`),
   bandit: (campaignId: string) => get<ArmPosterior[]>(`/campaigns/${campaignId}/bandit`),
   activate: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/activate`),
   pause: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/pause`),

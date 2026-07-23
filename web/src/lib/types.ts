@@ -133,10 +133,49 @@ export type DryRun = {
 export type Mailbox = {
   id: string;
   email: string;
+  dkim_selector: string | null;
   daily_limit: number;
   sent_today: number;
   warmup_stage: number;
   health: string;
+};
+
+export type DnsStatus = "pass" | "missing" | "error";
+
+export type DnsRecord = {
+  status: DnsStatus;
+  record: string | null;
+  recommended: string | null;
+};
+
+export type DmarcRecord = DnsRecord & { policy: string | null };
+
+export type DkimRecord = {
+  status: DnsStatus;
+  selector: string | null;
+  record: string | null;
+};
+
+export type WarmupStep = { day: number; stage: number; cap: number };
+
+export type Warmup = {
+  stage: number;
+  effective_cap: number;
+  daily_limit: number;
+  sent_today: number;
+  advances_per_day: number;
+  schedule: WarmupStep[];
+};
+
+export type DeliverabilityReport = {
+  mailbox_id: string;
+  email: string;
+  domain: string;
+  primary_domain_warning: boolean;
+  spf: DnsRecord;
+  dmarc: DmarcRecord;
+  dkim: DkimRecord;
+  warmup: Warmup;
 };
 
 export type ArmPosterior = {
