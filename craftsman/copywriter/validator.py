@@ -6,12 +6,13 @@ reaches an inbox without surviving these four checks.
 
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import textstat
 from rapidfuzz import fuzz
 
-FUZZY_THRESHOLD = 90.0
+FUZZY_THRESHOLD = 90.0  # entities only — numbers use exact match after normalization
 MAX_SUBJECT_WORDS = 7
 MAX_BODY_WORDS = 90
 MAX_READING_GRADE = 8.0
@@ -37,8 +38,56 @@ _COMMON_CAPS = {
     "june", "july", "august", "september", "october", "november", "december",
 }
 
-_NUMBER_RE = re.compile(r"\b\d[\d,]*(?:\.\d+)?%?")
+# Full numeric tokens: optional currency symbol, digits with separators/decimals,
+# optional magnitude suffix (k/m/b/bn or thousand/million/billion), optional percent.
+# The lookbehind stops mid-word digits ("Q3", "v2") from extracting as numbers; the
+# lookahead stops "4kg" from reading as 4 thousand (the 'k' must not start a word).
+_NUMERIC_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<cur>[$€£])?"
+    r"(?P<num>\d[\d,]*(?:\.\d+)?)"
+    r"(?:(?P<suf>bn|[kmb])(?![A-Za-z])|\s(?P<word>thousand|million|billion)\b)?"
+    r"(?P<pct>%)?",
+    re.IGNORECASE,
+)
 _PROPER_RE = re.compile(r"\b[A-Z][a-zA-Z0-9&.\-]*(?:\s+[A-Z][a-zA-Z0-9&.\-]*)*\b")
+
+_MAGNITUDES = {
+    "k": Decimal(1_000),
+    "thousand": Decimal(1_000),
+    "m": Decimal(1_000_000),
+    "million": Decimal(1_000_000),
+    "b": Decimal(1_000_000_000),
+    "bn": Decimal(1_000_000_000),
+    "billion": Decimal(1_000_000_000),
+}
+
+
+def normalize_numeric(token: str) -> tuple[Decimal, str] | None:
+    """Canonicalize a numeric token to (value, kind).
+
+    kind is one of 'plain' | 'percent' | 'currency'. Separators and currency symbols
+    are stripped, magnitude suffixes expanded exactly via Decimal: $4M -> (4000000,
+    'currency'); 1,000 -> (1000, 'plain'); 12% -> (12, 'percent'). Returns None for
+    anything that doesn't parse — callers treat that as ungrounded (fail closed).
+    """
+    m = _NUMERIC_RE.fullmatch(token.strip())
+    if m is None:
+        return None
+    try:
+        value = Decimal(m.group("num").replace(",", ""))
+    except InvalidOperation:
+        return None
+    suffix = (m.group("suf") or m.group("word") or "").lower()
+    if suffix:
+        value *= _MAGNITUDES[suffix]
+    if m.group("pct"):
+        kind = "percent"
+    elif m.group("cur"):
+        kind = "currency"
+    else:
+        kind = "plain"
+    return value, kind
 
 
 @dataclass
@@ -65,8 +114,9 @@ def extract_claims(text: str) -> tuple[list[str], list[str]]:
     """Return (proper_nouns, numbers) found in text.
 
     Proper nouns: capitalized token runs that are not sentence-initial common words.
+    Numbers: full numeric tokens including currency symbol / magnitude suffix / percent.
     """
-    numbers = _NUMBER_RE.findall(text)
+    numbers = [m.group(0) for m in _NUMERIC_RE.finditer(text)]
 
     proper: list[str] = []
     for m in _PROPER_RE.finditer(text):
@@ -95,6 +145,36 @@ def _grounded(claim: str, corpus: list[str]) -> bool:
     return False
 
 
+def _corpus_numerics(corpus: list[str]) -> list[tuple[Decimal, str]]:
+    """Extract and normalize every numeric token in the grounding corpus."""
+    out: list[tuple[Decimal, str]] = []
+    for source in corpus:
+        for m in _NUMERIC_RE.finditer(source):
+            norm = normalize_numeric(m.group(0))
+            if norm is not None:
+                out.append(norm)
+    return out
+
+
+def _numeric_grounded(value: Decimal, kind: str, corpus_numerics: list[tuple[Decimal, str]]) -> bool:
+    """Exact-match grounding for numbers.
+
+    A percent claim needs a percent source. A currency claim matches a currency or
+    plain source of equal value (symbols are unit-insensitive by design: £4M grounds
+    against $4M). A bare number matches any source of equal value — its digits are
+    genuinely present in the brief.
+    """
+    for cvalue, ckind in corpus_numerics:
+        if cvalue != value:
+            continue
+        if kind == "percent" and ckind != "percent":
+            continue
+        if kind == "currency" and ckind == "percent":
+            continue
+        return True
+    return False
+
+
 def validate_fill(
     *,
     slots: dict[str, str],
@@ -113,14 +193,30 @@ def validate_fill(
     for src in grounding_sources:
         corpus.extend(_collect_strings(src))
 
-    # 1. grounding: every proper noun / number must appear in the corpus
+    # 1. grounding — two paths:
+    #    entities: fuzzy match (partial_ratio >= FUZZY_THRESHOLD), unchanged
+    #    numbers:  exact match after normalization ($4M == $4,000,000 != $40M)
+    corpus_numerics = _corpus_numerics(corpus)
     for slot_name, value in slots.items():
         proper, numbers = extract_claims(value)
-        for claim in proper + numbers:
+        for claim in proper:
             if not _grounded(claim, corpus):
                 errors.append(
                     f"slot '{slot_name}': claim '{claim}' not found in research brief "
                     f"or campaign config — remove it or replace with grounded fact"
+                )
+        for token in numbers:
+            norm = normalize_numeric(token)
+            if norm is None or not _numeric_grounded(norm[0], norm[1], corpus_numerics):
+                if norm is None:
+                    shown = "unparseable"
+                else:
+                    v = norm[0]
+                    shown = f"{int(v):,}" if v == v.to_integral_value() else f"{v:,}"
+                errors.append(
+                    f"slot '{slot_name}': number '{token}' (= {shown}) has no exact "
+                    f"match in the research brief or campaign config — numbers are "
+                    f"never fuzzy-matched; remove it or use the grounded figure"
                 )
 
     # 2. banned phrases + em-dash spam

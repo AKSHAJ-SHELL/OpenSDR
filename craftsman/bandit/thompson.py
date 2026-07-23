@@ -31,11 +31,33 @@ class Arm:
         return self.alpha / (self.alpha + self.beta)
 
 
+_SEEDED_RNG: np.random.Generator | None = None
+
+
+def get_bandit_rng() -> np.random.Generator:
+    """The generator pick_arm should draw from.
+
+    When BANDIT_SEED is set, return one cached generator seeded once — a deterministic
+    *stream* across calls, for reproducible simulations and CI. When unset, return a
+    fresh default generator each call (production behavior). Do NOT set a seed in a
+    multi-worker deployment: every process would seed identically and lose independence.
+    """
+    global _SEEDED_RNG
+    from craftsman.core.config import get_settings
+
+    seed = get_settings().bandit_seed
+    if seed is None:
+        return np.random.default_rng()
+    if _SEEDED_RNG is None:
+        _SEEDED_RNG = np.random.default_rng(seed)
+    return _SEEDED_RNG
+
+
 def pick_arm(arms: list[Arm], rng: np.random.Generator | None = None) -> Arm:
     """Sample each posterior once; return the argmax arm."""
     if not arms:
         raise ValueError("no active arms to pick from")
-    rng = rng or np.random.default_rng()
+    rng = rng or get_bandit_rng()
     samples = [rng.beta(a.alpha, a.beta) for a in arms]
     return arms[int(np.argmax(samples))]
 

@@ -8,16 +8,33 @@ import type {
   ReviewItem,
 } from "./types";
 
-/** Server-side can use API_URL (e.g. http://api:8000 in Docker). Browser uses NEXT_PUBLIC_API_URL. */
-const BASE =
+const IS_SERVER = typeof window === "undefined";
+
+/**
+ * On the server, call the API directly and attach the API key.
+ * In the browser, route through the session-gated Next proxy — the key stays
+ * server-side and is never shipped to the client.
+ */
+const API_BASE =
   process.env.API_URL ??
   process.env.NEXT_PUBLIC_API_URL ??
   "http://127.0.0.1:8000";
 
+function target(path: string): string {
+  return IS_SERVER ? `${API_BASE}${path}` : `/api/proxy${path}`;
+}
+
+function authHeaders(): Record<string, string> {
+  if (IS_SERVER && process.env.CRAFTSMAN_API_KEY) {
+    return { Authorization: `Bearer ${process.env.CRAFTSMAN_API_KEY}` };
+  }
+  return {};
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(target(path), {
     cache: "no-store",
-    headers: { Accept: "application/json" },
+    headers: { Accept: "application/json", ...authHeaders() },
   });
   if (!res.ok) {
     throw new Error(`${res.status} ${res.statusText} for ${path}`);
@@ -26,12 +43,13 @@ async function get<T>(path: string): Promise<T> {
 }
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(target(path), {
     method: "POST",
     cache: "no-store",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
+      ...authHeaders(),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -59,5 +77,5 @@ export const api = {
 };
 
 export function apiBase() {
-  return BASE;
+  return API_BASE;
 }

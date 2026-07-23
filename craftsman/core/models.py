@@ -73,6 +73,11 @@ class Campaign(Base):
     value_prop: Mapped[str] = mapped_column(Text, nullable=False)
     sender_persona: Mapped[dict | None] = mapped_column(JSONB)
     daily_cap: Mapped[int] = mapped_column(Integer, default=50)
+    # atomic per-day send counter (reserve/release); reset daily. The cap gate reads
+    # THIS, not a message count, so concurrent workers can't collectively over-send.
+    sent_today: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     status: Mapped[str] = mapped_column(Text, default="draft")  # draft|active|paused|done
     icp_embedding: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIM))
 
@@ -133,11 +138,24 @@ class Enrollment(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        # Idempotency: at most one outbound message per (enrollment, step). The send
+        # path claims this row BEFORE delivering, so an acks_late retry hits the
+        # constraint and skips rather than sending a duplicate.
+        Index(
+            "uq_outbound_step",
+            "enrollment_id",
+            "step_order",
+            unique=True,
+            postgresql_where=text("direction = 'outbound'"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     enrollment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("enrollments.id"))
     variant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("variants.id"))
     direction: Mapped[str] = mapped_column(Text, nullable=False)  # outbound|inbound
+    step_order: Mapped[int | None] = mapped_column(Integer)  # sequence step, outbound only
     mailbox_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("mailboxes.id"))
     subject: Mapped[str | None] = mapped_column(Text)
     body: Mapped[str | None] = mapped_column(Text)
@@ -147,6 +165,9 @@ class Message(Base):
     bandit_outcome: Mapped[str | None] = mapped_column(Text)  # pending|success|failure
     outcome_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )  # when the row (incl. an outbound claim) was created — drives the unsent-claim sweep
 
     enrollment: Mapped[Enrollment | None] = relationship()
     variant: Mapped[Variant | None] = relationship()
@@ -219,3 +240,42 @@ class UnsubscribeToken(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
+
+
+class DeadLetter(Base):
+    """A Celery task that failed terminally (retries exhausted). Redis has no native
+    dead-letter queue, so we record failures here for inspection and manual re-drive."""
+
+    __tablename__ = "dead_letters"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    task_name: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str | None] = mapped_column(Text)
+    args: Mapped[list | None] = mapped_column(JSONB)
+    kwargs: Mapped[dict | None] = mapped_column(JSONB)
+    exception: Mapped[str | None] = mapped_column(Text)
+    traceback: Mapped[str | None] = mapped_column(Text)
+    # the enrollment the task referenced, if any (plain id — no FK, so erasure and
+    # enrollment deletion never trip over dead-letter rows)
+    enrollment_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class ApiKey(Base):
+    """A hashed, scoped API key. The plaintext token is shown once at creation;
+    only its SHA-256 digest is stored here."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)  # first chars, for UI/logs
+    key_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
+    scopes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # read|operate|admin
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

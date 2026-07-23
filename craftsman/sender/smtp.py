@@ -11,7 +11,7 @@ from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 
 import aiosmtplib
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from craftsman.compliance.suppression import is_suppressed, make_unsubscribe_token
@@ -69,10 +69,11 @@ def campaign_sent_today(db: Session, campaign_id) -> int:
 
 
 def run_presend_checks(db: Session, lead: Lead, campaign: Campaign) -> Mailbox:
+    """Suppression → mailbox capacity → per-mailbox rate limit. The per-campaign cap
+    is a separate atomic reserve (reserve_campaign_slot), evaluated last by the caller
+    so a slot is only taken when a send is actually imminent."""
     if is_suppressed(db, lead.email):
         raise SendBlocked("suppressed")
-    if campaign_sent_today(db, campaign.id) >= campaign.daily_cap:
-        raise SendBlocked("campaign_daily_cap")
     mailbox = pick_mailbox(db)
     if mailbox is None:
         raise SendBlocked("no_mailbox_capacity")
@@ -80,6 +81,32 @@ def run_presend_checks(db: Session, lead: Lead, campaign: Campaign) -> Mailbox:
     if wait > 0:
         raise SendBlocked("rate_limited", retry_in=wait)
     return mailbox
+
+
+def reserve_campaign_slot(db: Session, campaign: Campaign) -> bool:
+    """Atomically claim one send against the campaign's daily cap.
+
+    A single conditional UPDATE — the row lock serializes concurrent workers, so no
+    two can both cross the cap (fixes the read-then-act race). Returns True if a slot
+    was reserved, False if the cap is already reached. Commit promptly to release the
+    row lock; never hold it across the SMTP send.
+    """
+    result = db.execute(
+        update(Campaign)
+        .where(Campaign.id == campaign.id, Campaign.sent_today < Campaign.daily_cap)
+        .values(sent_today=Campaign.sent_today + 1)
+    )
+    return result.rowcount == 1
+
+
+def release_campaign_slot(db: Session, campaign_id) -> None:
+    """Return a reserved slot after a send is abandoned (duplicate claim or a failed
+    delivery), so a transient failure doesn't permanently burn a slot."""
+    db.execute(
+        update(Campaign)
+        .where(Campaign.id == campaign_id, Campaign.sent_today > 0)
+        .values(sent_today=Campaign.sent_today - 1)
+    )
 
 
 def build_email(

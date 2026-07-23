@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.core.models import Enrollment, Lead, Message, ReviewQueueItem
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
-@router.get("/overview")
+@router.get("/overview", dependencies=[Depends(require_scope("read"))])
 def overview(db: Session = Depends(get_db)):
     sent = db.scalar(
         select(func.count(Message.id)).where(Message.direction == "outbound")

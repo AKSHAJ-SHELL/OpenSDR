@@ -40,9 +40,16 @@ class Settings(BaseSettings):
 
     # Bandit
     bandit_deactivate_min_trials: int = 30
+    # Reproducibility knob for sims/CI: when set, pick_arm draws from a deterministic
+    # stream. Leave UNSET in multi-worker prod (every process would seed identically).
+    bandit_seed: int | None = None
 
     # Classifier
     classifier_confidence_threshold: float = 0.7
+
+    # Re-drive: an outbound claim with sent_at still NULL after this many minutes is a
+    # crash residual — the sweep deletes it, frees the campaign slot, and re-readies the lead.
+    redrive_unsent_after_minutes: int = 15
 
     # Notifications
     slack_webhook_url: str = ""

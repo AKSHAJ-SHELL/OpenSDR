@@ -20,7 +20,7 @@ Commercial "AI SDR employees" are, mechanically: a state machine, a scraper, two
 
 The LLM never writes an email. It fills **typed slots** in a fixed skeleton, from a **structured research brief** whose every claim must be backed by verbatim source text. Then a deterministic validator gates the output:
 
-1. Every proper noun and number in the fill must appear in the research brief or campaign config (fuzzy match ≥ 0.9) — or the fill is rejected.
+1. Every proper noun in the fill must appear in the research brief or campaign config (fuzzy match ≥ 0.9) — and every **number must match exactly** after normalization ($4M counts as $4,000,000, but never as $40M; 12% needs a percent source). Numbers are never fuzzy-matched. Fail either check and the fill is rejected.
 2. Banned-phrase list (every "I hope this finds you well"-style tell).
 3. Length caps: subject ≤ 7 words, body ≤ 90 words.
 4. Reading grade ≤ 8.
@@ -80,16 +80,33 @@ cp .env.example .env
 # set ANTHROPIC_API_KEY (or LLM_PROVIDER=ollama) and generate CRAFTSMAN_SECRET_KEY:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
+# --- auth setup (required) ---
+# 1. bootstrap an admin API key (needs Postgres up: docker compose up -d postgres)
+python -m craftsman.create_key --name bootstrap --scopes admin
+# 2. a key for the dashboard to call the API with (kept server-side):
+python -m craftsman.create_key --name dashboard --scopes read operate
+# 3. a login password hash + a cookie-signing secret:
+node web/scripts/hash-password.mjs 'choose-a-strong-password'
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# put the dashboard key, password hash, and secret into .env
+# (CRAFTSMAN_API_KEY, DASHBOARD_PASSWORD_HASH, DASHBOARD_SESSION_SECRET)
+
 docker compose up -d
-# API:       http://localhost:8000/docs
-# Dashboard: http://localhost:3000
+# API:       http://localhost:8000   (every route needs Authorization: Bearer <key>)
+# Dashboard: http://localhost:3000   (sign in with your password)
 # Mailpit:   http://localhost:8025
 
-# import leads
-curl -F "file=@leads.csv" http://localhost:8000/leads/import
+# import leads (Bearer key required)
+curl -F "file=@leads.csv" -H "Authorization: Bearer $KEY" http://localhost:8000/leads/import
 
-# create a campaign, add variants, activate — see /docs
+# create a campaign, add variants, activate — see /docs (also key-gated)
 ```
+
+> **⚠️ Exposure warning.** The API and dashboard bind to `localhost` by default.
+> **Do not expose port 8000 or 3000 to the internet.** Every API route now requires a
+> scoped key and the dashboard requires a login, but that is your *only* wall between a
+> public port and your lead database + an open mail cannon. If you must reach it remotely,
+> put it behind a VPN or an authenticating reverse proxy with TLS — never a raw port.
 
 Local app processes (Ollama on the host): infra via `docker compose up -d postgres redis mailpit`, then:
 
@@ -101,20 +118,60 @@ celery -A craftsman.workers.celery_app beat -l info
 cd web && npm install && npm run dev   # http://localhost:3000
 ```
 
+## Authentication
+
+Every API endpoint requires an `Authorization: Bearer <key>` header, except `/health`
+and the RFC 8058 one-click unsubscribe at `/u/{token}` (which must stay anonymous). Keys
+are random `csk_…` tokens, stored only as a SHA-256 hash, and carry hierarchical scopes:
+
+| Scope | Grants | Example routes |
+|---|---|---|
+| `read` | read-only | list leads/campaigns/inbox, analytics, bandit posteriors, `/docs` |
+| `operate` | read + run the pipeline | import leads, create/activate/pause campaigns, reclassify |
+| `admin` | operate + manage secrets | mailboxes, `DELETE /leads/{id}/erase`, `/keys` |
+
+`admin` implies `operate` implies `read`. Create keys with
+`python -m craftsman.create_key --name <n> --scopes <...>` or, once you have an admin key,
+`POST /keys`. Revoke with `DELETE /keys/{id}`. The dashboard signs in a single admin
+(password hashed with scrypt in `DASHBOARD_PASSWORD_HASH`) and calls the API with a
+server-held key routed through a session-gated proxy — the key is never exposed to the
+browser. `/docs` and `/openapi.json` are gated behind `read`, so the API surface isn't
+enumerable without a key.
+
 ## Testing
 
 ```bash
-pytest             # 54 tests: state machine, validator, bandit math, scheduling,
-                   # copywriter retry loop, full Postgres integration flow
+pytest             # state machine, validator, bandit math, scheduling, copywriter retry,
+                   # full Postgres integration flow, and the auth suite (unit + adversarial)
 python scripts/eval_classifier.py   # live LLM eval vs 32 adversarial reply fixtures
 python scripts/seed_demo.py         # populate the dashboard with demo data
 ```
 
-The unit layer is pure functions and a mock LLM — no API key, no network. Integration tests run against real Postgres and skip cleanly if it's absent. The classifier eval includes the adversarial cases that matter: the OOO that mentions interest, the polite unsubscribe, the helpdesk auto-ack.
+The unit layer is pure functions and a mock LLM — no API key, no network. Integration tests
+(including the auth flow, a fail-closed route audit that 401s every non-allowlisted endpoint,
+and the Alembic migration round-trip) run against real Postgres and skip cleanly if it's
+absent. `tests/adversarial/` holds the predict-then-run attack cases: fuzzed tokens, scheme
+confusion, revoked-key reuse, query-string tokens. The classifier eval includes the replies
+that matter: the OOO that mentions interest, the polite unsubscribe, the helpdesk auto-ack.
+
+**Schema changes ship a migration.** The database schema is managed by Alembic
+(`craftsman/migrations/`); the API runs `alembic upgrade head` on startup, so
+`docker compose up` stays one command. When you change a model, generate a migration
+(`alembic revision --autogenerate -m "what changed"`) and review it — a CI check fails if
+the models and migrations drift apart.
 
 ## Compliance
 
 One-click unsubscribe (RFC 8058 `List-Unsubscribe-Post`), physical address in every footer (CAN-SPAM), permanent suppression list checked at generation *and* send time, GDPR mode that blocks EU-TLD enrollment for non-opt-in lists, and `DELETE /leads/{id}/erase` for data-subject requests. Deliverability guardrails (verification, warmup ramps, rate jitter, bounce-driven mailbox degradation) are on by default so self-hosters don't torch their domains.
+
+**What erasure actually deletes:** the lead row, enrollments, all messages (including the
+prospect's reply text), review-queue items, and unsubscribe tokens; the cached company
+research brief is scrubbed of the person's name and email (company facts stay). Audit-log
+rows are kept but anonymized — the enrollment link is severed and identifiers are scrubbed,
+so they no longer relate to an identifiable person. The suppression entry deliberately
+survives: it is the do-not-contact record that keeps the address from ever being re-imported.
+Queued background jobs reference database IDs only, so a job queued before erasure is a
+verified no-op after it.
 
 ## License
 

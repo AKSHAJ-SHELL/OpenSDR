@@ -179,3 +179,40 @@ class ImportResult(BaseModel):
     deduped: int
     suppressed: int
     errors: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------- API keys
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1)
+    scopes: list[Literal["read", "operate", "admin"]] = Field(min_length=1)
+
+
+class ApiKeyOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    key_prefix: str
+    scopes: list[str]
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ApiKeyCreated(ApiKeyOut):
+    """Returned exactly once, on creation: includes the plaintext token."""
+
+    token: str
+
+
+class DeadLetterOut(BaseModel):
+    id: uuid.UUID
+    task_name: str
+    task_id: str | None = None
+    exception: str | None = None
+    enrollment_id: str | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
