@@ -388,6 +388,133 @@ def generate_touch_task(self, enrollment_id: str):
         db.add(enrollment)
 
 
+# ------------------------------------------------------------------ reply drafts (M4.1)
+
+
+@app.task(bind=True, max_retries=3)
+def generate_reply_draft(self, inbound_message_id: str):
+    """Copilot: draft a validated reply for a confident interested/objection reply.
+
+    Same policies as every generator — suppression re-check, validate-twice-then-
+    review-queue, idempotency claim (UNIQUE inbound_message_id) — and the same hard
+    line: this creates a ReplyDraft row, never an email. Dispatch is a separate,
+    human-clicked path (sender/reply.py). Nothing here touches SMTP, mailbox
+    counters, campaign caps, or the bandit.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from craftsman.compliance.suppression import is_suppressed
+    from craftsman.copywriter.reply_fill import generate_reply_copy
+    from craftsman.core.models import ReplyDraft, ReviewQueueItem
+
+    with session_scope() as db:
+        inbound = db.get(Message, inbound_message_id)
+        if inbound is None or inbound.direction != "inbound":
+            return
+        if inbound.classification not in ("interested", "objection"):
+            return
+        enrollment = db.get(Enrollment, inbound.enrollment_id) if inbound.enrollment_id else None
+        if enrollment is None:
+            return
+        lead = db.get(Lead, enrollment.lead_id)
+        campaign = db.get(Campaign, enrollment.campaign_id)
+        company = db.get(Company, lead.company_id) if lead else None
+
+        from craftsman.core.logging import bind_log_context
+
+        bind_log_context(enrollment_id=str(enrollment.id), message_id=str(inbound.id))
+
+        # do-not-contact gates drafting too: a suppressed lead gets no draft at all
+        if lead is None or is_suppressed(db, lead.email):
+            return
+
+        # idempotency claim BEFORE the LLM call — a redelivered task must not
+        # burn tokens or race a human already acting on the first draft
+        claim = ReplyDraft(
+            inbound_message_id=inbound.id,
+            enrollment_id=enrollment.id,
+            status="generating",
+        )
+        db.add(claim)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            log.info("duplicate reply draft suppressed for message %s", inbound_message_id)
+            return
+        db.commit()  # claim durable before the LLM round-trip
+
+        brief = ResearchBrief.model_validate(
+            (company.research_brief if company else None) or {}
+        )
+        scheduling_line = _reply_scheduling_line(campaign)
+        info_line = _reply_info_line(campaign)
+        try:
+            copy = _run(generate_reply_copy(
+                llm=get_llm(),
+                brief=brief,
+                value_prop=campaign.value_prop,
+                persona=campaign.sender_persona or {},
+                first_name=lead.first_name or "",
+                reply_text=inbound.body or "",
+                label=inbound.classification,
+                scheduling_line=scheduling_line,
+                info_line=info_line,
+            ))
+        except Exception:
+            # in-process failure: drop the claim so the retry regenerates cleanly
+            # (only a hard crash leaves a stuck 'generating' row — same caveat as
+            # the email send claim)
+            db.delete(claim)
+            db.commit()
+            raise self.retry(countdown=60)
+
+        now = datetime.now(timezone.utc)
+        if copy.ok:
+            claim.skeleton_key = copy.skeleton_key
+            claim.slots = copy.slots
+            claim.body = copy.body
+            claim.status = "pending"
+            claim.detail = {"attempts": copy.attempts}
+        elif copy.skipped_reason:
+            claim.status = "skipped"
+            claim.resolved_at = now
+            claim.detail = {"reason": copy.skipped_reason}
+        else:
+            claim.status = "failed"
+            claim.resolved_at = now
+            claim.detail = {
+                "errors": copy.validation.errors if copy.validation else [],
+                "slots": copy.slots,
+            }
+            db.add(ReviewQueueItem(
+                kind="reply_draft",
+                message_id=inbound.id,
+                enrollment_id=enrollment.id,
+                payload={
+                    "errors": copy.validation.errors if copy.validation else [],
+                    "slots": copy.slots,
+                },
+            ))
+            log.warning("reply copywriter rejected twice for %s", lead.email)
+        db.add(claim)
+
+
+def _reply_scheduling_line(campaign: Campaign) -> str:
+    """Static scheduling-link line for interested drafts — campaign config only,
+    never LLM content. Wired to campaigns.scheduling_url in M4.3; until then the
+    persona's calendly (already part of the signature convention) is NOT repeated
+    in the body, so this stays empty."""
+    url = getattr(campaign, "scheduling_url", None)
+    return f"If it is easier, grab any time here: {url}" if url else ""
+
+
+def _reply_info_line(campaign: Campaign) -> str:
+    """Static one-pager line for info-objection drafts — campaign config only."""
+    url = getattr(campaign, "info_doc_url", None)
+    return f"Here is the short version: {url}" if url else ""
+
+
 # ------------------------------------------------------------------ dry run (M1.2)
 
 
@@ -610,6 +737,7 @@ def poll_inboxes():
 
     llm = get_llm()
     settings = get_settings()
+    enqueue_draft = lambda message_id: generate_reply_draft.delay(str(message_id))  # noqa: E731
     with session_scope() as db:
         mailboxes = db.scalars(
             select(Mailbox).where(
@@ -619,7 +747,9 @@ def poll_inboxes():
         ).all()
         for mailbox in mailboxes:
             for inbound in fetch_unseen(mailbox):
-                _run(handle_inbound(db, llm, inbound, mailbox_id=mailbox.id))
+                _run(handle_inbound(
+                    db, llm, inbound, mailbox_id=mailbox.id, enqueue_draft=enqueue_draft
+                ))
 
         if settings.mailpit_url:
             for inbound in fetch_mailpit(db, settings.mailpit_url):
@@ -628,7 +758,9 @@ def poll_inboxes():
                 if box_id is None:
                     any_box = db.scalars(select(Mailbox).limit(1)).first()
                     box_id = any_box.id if any_box else None
-                _run(handle_inbound(db, llm, inbound, mailbox_id=box_id))
+                _run(handle_inbound(
+                    db, llm, inbound, mailbox_id=box_id, enqueue_draft=enqueue_draft
+                ))
 
 
 # ------------------------------------------------------------------ settle + housekeeping

@@ -58,6 +58,21 @@ class ReplyClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class ReplyDraftFill(BaseModel):
+    """Reply copywriter output (M4.1): only the slots, never a whole reply.
+
+    The LLM also picks WHICH fixed skeleton fits an objection (timing vs info vs
+    other) — an enum choice, not free text. `other` objections (pricing, competitor,
+    hostile) deliberately get NO draft: a human writes those. Rendered through the
+    reply-specific validator (grounding incl. the inbound reply text, commitment
+    gate, ≤ REPLY_DRAFT_MAX_WORDS, grade ≤ 8)."""
+
+    objection_kind: Literal["timing", "info", "other"] = "other"
+    acknowledgment: str
+    answer_bridge: str
+    cta_question: str
+
+
 # ---------------------------------------------------------------- API schemas
 
 
@@ -357,6 +372,29 @@ class MessageOut(BaseModel):
     lead_email: str | None = None
     lead_name: str | None = None
     company_domain: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ReplyDraftOut(BaseModel):
+    id: uuid.UUID
+    inbound_message_id: uuid.UUID
+    enrollment_id: uuid.UUID | None
+    skeleton_key: str | None
+    body: str | None
+    status: str
+    auto_sent: bool
+    detail: dict | None = None
+    sent_message_id: uuid.UUID | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+    # joined context for the inbox UI
+    lead_email: str | None = None
+    lead_name: str | None = None
+    campaign_name: str | None = None
+    inbound_subject: str | None = None
+    inbound_body: str | None = None
+    inbound_classification: str | None = None
 
     model_config = {"from_attributes": True}
 

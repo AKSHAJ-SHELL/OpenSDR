@@ -323,6 +323,57 @@ class TouchTask(Base):
     enrollment: Mapped[Enrollment] = relationship()
 
 
+class ReplyDraft(Base):
+    """A validated, skeleton-rendered reply waiting for a human (M4.1 Copilot).
+
+    Exactly one draft per inbound message (UNIQUE) — the insert is the generation
+    idempotency claim, mirroring the send/touch-task pattern. Statuses:
+      generating   — claim row, LLM round-trip in flight
+      pending      — validated draft awaiting a human decision
+      sending      — dispatch claim (CAS from pending) held across the SMTP send
+      sent         — approved verbatim and dispatched (human click, or Autopilot
+                     with auto_sent=true under M4.4's policy engine)
+      edited_sent  — human edited, edit re-validated, dispatched
+      discarded    — human declined (or suppression cancelled it; see detail)
+      failed       — validator rejected twice; routed to review queue
+      skipped      — deliberately not drafted (objection kind needs a human,
+                     escalation blocked it) — recorded for auditability
+    `body` is lead-personalized content quoting prospect-authored text (person PII):
+    erase_lead deletes these rows, before messages (FK). No FK cascade per M0.4.
+    """
+
+    __tablename__ = "reply_drafts"
+    __table_args__ = (
+        UniqueConstraint("inbound_message_id", name="uq_reply_draft_inbound"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    inbound_message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id"), nullable=False
+    )
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("enrollments.id"), index=True
+    )
+    skeleton_key: Mapped[str | None] = mapped_column(Text)  # reply_interested | reply_objection_timing | reply_objection_info
+    slots: Mapped[dict | None] = mapped_column(JSONB)
+    body: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )
+    auto_sent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    detail: Mapped[dict | None] = mapped_column(JSONB)  # validator errors / skip reason
+    sent_message_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("messages.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    inbound_message: Mapped[Message] = relationship(foreign_keys=[inbound_message_id])
+    enrollment: Mapped[Enrollment | None] = relationship()
+
+
 class Mailbox(Base):
     __tablename__ = "mailboxes"
 

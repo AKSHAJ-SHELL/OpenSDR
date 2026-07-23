@@ -37,6 +37,7 @@ async def handle_inbound(
     llm: LLMClient,
     inbound: InboundEmail,
     mailbox_id=None,
+    enqueue_draft=None,
 ) -> Message | None:
     """Full inbound flow for one email. Returns the stored inbound Message, or None
     if it couldn't be matched to a thread we own."""
@@ -88,7 +89,10 @@ async def handle_inbound(
         )
         return inbound_msg
 
-    apply_classification(db, enrollment, outbound, classification)
+    apply_classification(
+        db, enrollment, outbound, classification,
+        inbound_message_id=inbound_msg.id, enqueue_draft=enqueue_draft,
+    )
     return inbound_msg
 
 
@@ -97,8 +101,17 @@ def apply_classification(
     enrollment: Enrollment | None,
     outbound: Message,
     classification: ReplyClassification,
+    *,
+    inbound_message_id=None,
+    enqueue_draft=None,
 ) -> None:
-    """State transition + bandit update + side effects for a confident classification."""
+    """State transition + bandit update + side effects for a confident classification.
+
+    `enqueue_draft` (M4.1): callable(inbound_message_id) that queues Copilot reply
+    drafting for interested/objection replies — injected like tick's enqueue_* so the
+    pure pipeline never imports Celery. Drafting is async and can never block or fail
+    classification. A None callable means no drafting (tests, callers that opt out).
+    """
     label = classification.label
     lead = db.get(Lead, enrollment.lead_id) if enrollment else None
 
@@ -146,6 +159,14 @@ def apply_classification(
                 record_bounce(db, mailbox)
         elif label == "interested":
             notify_interested(lead, outbound)
+
+    # --- Copilot draft (M4.1): interested/objection replies get a validated draft
+    # queued for a human. Suppression re-checked inside the generator; unsubscribe/
+    # bounce labels never reach here with a drafting label.
+    if enqueue_draft is not None and inbound_message_id is not None and label in (
+        "interested", "objection",
+    ):
+        enqueue_draft(inbound_message_id)
 
 
 def notify_interested(lead: Lead, outbound: Message) -> None:

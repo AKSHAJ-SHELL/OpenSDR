@@ -1,0 +1,28 @@
+# Commitment gate (M4.1): terms that imply a commercial or legal commitment.
+# A reply draft containing one of these is REJECTED unless the term also appears in
+# the campaign's own config (value_prop / persona) — the campaign may talk about what
+# it already talks about, but a draft can never introduce a new commitment the
+# operator didn't write down. Matching is case-insensitive substring, fail-closed
+# ("price" also catches "priced"; "indemn" catches "indemnity"/"indemnification").
+# Pricing NUMBERS are gated separately and harder: any currency amount in a draft
+# must appear in the campaign config itself — a prospect writing "can you do $500?"
+# never makes "$500" a thing Craftsman may echo back as an offer.
+discount
+refund
+guarantee
+warranty
+free trial
+free month
+money back
+price match
+pricing
+price
+quote
+contract
+legal
+liability
+indemn
+sla
+uptime commitment
+compliance certif
+we promise

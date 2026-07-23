@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     call_pain_max_words: int = 20
     call_objection_max_words: int = 40
 
+    # Reply drafts (M4.1). ⛔ Gate M4 approved defaults: rendered reply ≤ 120 words;
+    # timing-objection drafts offer a follow-up in 4 weeks (skeleton static slot).
+    reply_draft_max_words: int = 120
+    reply_followup_weeks: int = 4
+
     # Optional Twilio click-to-dial (M3.3) — BYO account; disabled unless all four are
     # set. Rings the operator first, then dials the lead (no robocalls to prospects).
     twilio_account_sid: str = ""

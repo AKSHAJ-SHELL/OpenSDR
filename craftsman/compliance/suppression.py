@@ -18,6 +18,7 @@ from craftsman.core.models import (
     Lead,
     LeadEnrichmentRecord,
     Message,
+    ReplyDraft,
     ReviewQueueItem,
     SuppressionEntry,
     TouchTask,
@@ -142,6 +143,12 @@ def erase_lead(db: Session, lead: Lead) -> None:
                 audit.detail, _ = scrub_pii(audit.detail, identifiers)
             db.add(audit)
 
+        # reply drafts quote prospect-authored text (person PII) and FK-reference
+        # messages — deleted first so the message deletes below don't violate FKs
+        for draft in db.scalars(
+            select(ReplyDraft).where(ReplyDraft.enrollment_id.in_(enrollment_ids))
+        ).all():
+            db.delete(draft)
         for msg in db.scalars(
             select(Message).where(Message.enrollment_id.in_(enrollment_ids))
         ).all():

@@ -125,6 +125,26 @@ export type InboxMessage = {
   company_domain: string | null;
 };
 
+export type ReplyDraft = {
+  id: string;
+  inbound_message_id: string;
+  enrollment_id: string | null;
+  skeleton_key: string | null;
+  body: string | null;
+  status: string;
+  auto_sent: boolean;
+  detail: Record<string, unknown> | null;
+  sent_message_id: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  lead_email: string | null;
+  lead_name: string | null;
+  campaign_name: string | null;
+  inbound_subject: string | null;
+  inbound_body: string | null;
+  inbound_classification: string | null;
+};
+
 export type Campaign = {
   id: string;
   name: string;

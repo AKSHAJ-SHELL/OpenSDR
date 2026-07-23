@@ -7,8 +7,9 @@ export const dynamic = "force-dynamic";
 
 export default async function InboxPage() {
   let messages;
+  let drafts;
   try {
-    messages = await api.inbox();
+    [messages, drafts] = await Promise.all([api.inbox(), api.drafts("all")]);
   } catch (e) {
     return (
       <>
@@ -27,7 +28,7 @@ export default async function InboxPage() {
         title="Inbox"
         subtitle="Every reply in one place. Classify, override, hand off."
       />
-      <InboxView initial={messages} />
+      <InboxView initial={messages} initialDrafts={drafts} />
     </>
   );
 }

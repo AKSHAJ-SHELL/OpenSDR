@@ -478,6 +478,11 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Task idempotency | one task per (enrollment, step); unique `uq_touch_task_step`, claim pattern mirrors sends | `workers/tasks.py generate_touch_task` |
 | Task bandit isolation | task channels never update copy posteriors (uniform variant rotation); revisit in M6 | roadmap M3.3 decision |
 | `TWILIO_ACCOUNT_SID/_AUTH_TOKEN/_FROM_NUMBER/_OPERATOR_NUMBER` | "" (click-to-dial off; `tel:` link always works). Operator-first: Twilio rings **you**, then dials the lead | config; `sender/dialer.py` |
+| `reply_draft_max_words` ⛔ | 120 (rendered Copilot reply; grade ≤ 8 also applies) | config (⛔ Gate M4 approved) |
+| `reply_followup_weeks` | 4 (timing-objection drafts offer a follow-up in N weeks — fixed skeleton text, not LLM) | config (M4.1) |
+| Reply commitment gate | terms in `copywriter/commitment_terms.txt` + any currency amount must be licensed by campaign config / trusted sources — the prospect's reply can never license a price or promise | `validator.py validate_reply_fill` |
+| Reply draft idempotency | one draft per inbound message; unique `uq_reply_draft_inbound`, claim-before-LLM | `workers/tasks.py generate_reply_draft` |
+| Reply bandit isolation | drafts/sent replies never update copy posteriors (`bandit_outcome` NULL); acceptance rate is the metric | `sender/reply.py`; `/analytics/overview` |
 
 ---
 

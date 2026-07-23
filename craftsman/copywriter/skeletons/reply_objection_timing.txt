@@ -1,0 +1,7 @@
+Hi {{first_name}},
+
+{{acknowledgment}}
+
+{{answer_bridge}} Would it help if I checked back in {{followup_weeks}} weeks?
+
+{{signature}}
