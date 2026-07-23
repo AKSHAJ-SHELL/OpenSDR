@@ -19,6 +19,7 @@ from craftsman.core.schemas import (
     SourcedPreview,
     SourceImportRequest,
     SourceSearchRequest,
+    TimelineItemOut,
 )
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -225,6 +226,74 @@ def list_enrichments(lead_id: uuid.UUID, db: Session = Depends(get_db)):
         .where(LeadEnrichmentRecord.lead_id == lead_id)
         .order_by(LeadEnrichmentRecord.fetched_at.desc(), LeadEnrichmentRecord.field)
     ).all()
+
+
+@router.get(
+    "/{lead_id}/timeline",
+    response_model=list[TimelineItemOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def lead_timeline(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Unified touch history (M3.1): email sends, replies, and human-touch tasks
+    across every enrollment, newest first. One honest list of every contact —
+    autonomous or assisted — the system has had with this person."""
+    from craftsman.core.models import Enrollment, Message, TouchTask
+
+    lead = db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(404, "lead not found")
+
+    enrollments = db.scalars(
+        select(Enrollment).where(Enrollment.lead_id == lead_id)
+    ).all()
+    if not enrollments:
+        return []
+    by_id = {e.id: e for e in enrollments}
+    campaign_names = {
+        c.id: c.name
+        for c in db.scalars(
+            select(Campaign).where(Campaign.id.in_({e.campaign_id for e in enrollments}))
+        ).all()
+    }
+
+    items: list[TimelineItemOut] = []
+    for msg in db.scalars(
+        select(Message).where(Message.enrollment_id.in_(by_id.keys()))
+    ).all():
+        enrollment = by_id.get(msg.enrollment_id)
+        campaign_name = campaign_names.get(enrollment.campaign_id) if enrollment else None
+        if msg.direction == "outbound" and msg.sent_at is not None:
+            items.append(TimelineItemOut(
+                kind="email_sent", at=msg.sent_at, channel="email",
+                title=msg.subject or "(no subject)",
+                detail=f"step {msg.step_order}" if msg.step_order else None,
+                campaign_name=campaign_name,
+            ))
+        elif msg.direction == "inbound":
+            items.append(TimelineItemOut(
+                kind="reply", at=msg.created_at, channel="email",
+                title=msg.subject or "(no subject)",
+                classification=msg.classification,
+                campaign_name=campaign_name,
+            ))
+
+    for task in db.scalars(
+        select(TouchTask).where(TouchTask.enrollment_id.in_(by_id.keys()))
+    ).all():
+        enrollment = by_id.get(task.enrollment_id)
+        campaign_name = campaign_names.get(enrollment.campaign_id) if enrollment else None
+        label = "LinkedIn touch" if task.channel == "linkedin_task" else "Call"
+        items.append(TimelineItemOut(
+            kind="task", at=task.resolved_at or task.created_at or task.due_at,
+            channel=task.channel,
+            title=f"{label} — {task.status}",
+            detail=f"step {task.step_order}",
+            status=task.status, outcome=task.outcome,
+            campaign_name=campaign_name,
+        ))
+
+    items.sort(key=lambda i: i.at, reverse=True)
+    return items
 
 
 @router.post("/{lead_id}/suppress", status_code=204, dependencies=[Depends(require_scope("operate"))])

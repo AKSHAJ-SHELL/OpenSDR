@@ -52,6 +52,21 @@ class Settings(BaseSettings):
     signal_funding_rss_url: str = ""
     signal_half_life_days: float = 30.0
 
+    # Multi-channel tasks (M3). ⛔ Gate M3 approved defaults: due window 3 business
+    # days; LinkedIn note ≤ 280 chars rendered; call-brief word caps 25/20/40.
+    touch_task_due_days: int = 3
+    linkedin_note_max_chars: int = 280
+    call_opener_max_words: int = 25
+    call_pain_max_words: int = 20
+    call_objection_max_words: int = 40
+
+    # Optional Twilio click-to-dial (M3.3) — BYO account; disabled unless all four are
+    # set. Rings the operator first, then dials the lead (no robocalls to prospects).
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    twilio_operator_number: str = ""
+
     # Secrets
     craftsman_secret_key: str = ""
 

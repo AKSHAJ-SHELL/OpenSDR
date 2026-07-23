@@ -1,8 +1,13 @@
 """Pure-function sequence state machine. No I/O — the transition table is data.
 
 States:
-  queued | researching | ready | waiting | replied_interested | replied_objection |
-  replied_not_now | ooo_rescheduled | bounced | unsubscribed | finished_no_reply | error
+  queued | researching | ready | waiting | awaiting_human_touch | replied_interested |
+  replied_objection | replied_not_now | ooo_rescheduled | bounced | unsubscribed |
+  finished_no_reply | error
+
+`awaiting_human_touch` (M3.1): an assisted-channel step generated a validated task and
+is waiting for a human to perform the touch. Replies, bounces, and unsubscribes still
+route normally from it — the sequence is paused, not deaf.
 """
 
 from enum import Enum
@@ -14,6 +19,10 @@ class Event(str, Enum):
     SEND_OK = "send_ok"
     SEND_FAILED = "send_failed"
     TIMER = "timer"
+    TASK_CREATED = "task_created"  # M3.1: validated task queued for a human
+    TASK_DONE = "task_done"  # human performed the touch
+    TASK_SKIPPED = "task_skipped"  # human declined the touch; sequence advances
+    TASK_EXPIRED = "task_expired"  # due window passed on a skip_on_expire step
     REPLY_INTERESTED = "reply_interested"
     REPLY_OBJECTION = "reply_objection"
     REPLY_NOT_NOW = "reply_not_now"
@@ -42,6 +51,17 @@ TRANSITIONS: dict[tuple[str, Event], str] = {
     ("waiting", Event.REPLY_OOO): "ooo_rescheduled",
     ("ooo_rescheduled", Event.TIMER): "ready",
     ("ooo_rescheduled", Event.REPLY_INTERESTED): "replied_interested",
+    # M3.1 — assisted channels: ready → task queued → human completes/skips (or the
+    # due window expires on a skip_on_expire step) → back into the normal wait cycle.
+    ("ready", Event.TASK_CREATED): "awaiting_human_touch",
+    ("awaiting_human_touch", Event.TASK_DONE): "waiting",
+    ("awaiting_human_touch", Event.TASK_SKIPPED): "waiting",
+    ("awaiting_human_touch", Event.TASK_EXPIRED): "waiting",
+    # a reply can land while a task is open (e.g. to an earlier email step)
+    ("awaiting_human_touch", Event.REPLY_INTERESTED): "replied_interested",
+    ("awaiting_human_touch", Event.REPLY_OBJECTION): "replied_objection",
+    ("awaiting_human_touch", Event.REPLY_NOT_NOW): "replied_not_now",
+    ("awaiting_human_touch", Event.REPLY_OOO): "ooo_rescheduled",
     ("*", Event.BOUNCE): "bounced",
     ("*", Event.UNSUBSCRIBE): "unsubscribed",
 }

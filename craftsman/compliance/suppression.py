@@ -20,6 +20,7 @@ from craftsman.core.models import (
     Message,
     ReviewQueueItem,
     SuppressionEntry,
+    TouchTask,
     UnsubscribeToken,
 )
 
@@ -145,6 +146,11 @@ def erase_lead(db: Session, lead: Lead) -> None:
             select(Message).where(Message.enrollment_id.in_(enrollment_ids))
         ).all():
             db.delete(msg)
+        # touch tasks hold personalized outreach content (LinkedIn note / call brief) — PII
+        for task in db.scalars(
+            select(TouchTask).where(TouchTask.enrollment_id.in_(enrollment_ids))
+        ).all():
+            db.delete(task)
         for enr in db.scalars(
             select(Enrollment).where(Enrollment.id.in_(enrollment_ids))
         ).all():

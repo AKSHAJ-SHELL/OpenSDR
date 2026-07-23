@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
-from craftsman.copywriter.fill import KNOWN_SKELETON_SLOTS, LLM_SLOTS, skeleton_slots
+from craftsman.copywriter.fill import skeleton_slots
 from craftsman.core.config import get_settings
 from craftsman.core.models import (
     Campaign,
@@ -51,20 +51,31 @@ def _has_enrollments(db: Session, campaign_id: uuid.UUID) -> bool:
     return db.scalar(select(Enrollment.id).where(Enrollment.campaign_id == campaign_id).limit(1)) is not None
 
 
-def _checked_slot_schema(skeleton: str) -> dict:
-    """422 on placeholders outside the slot vocabulary; derive slot_schema from the rest.
+def _checked_slot_schema(skeleton: str, channel: str = "email") -> dict:
+    """422 on placeholders outside the channel's slot vocabulary; derive slot_schema
+    from the rest.
 
     render_skeleton raises on unfilled placeholders at send time — this moves that
-    failure to authoring time, where the author can fix it.
+    failure to authoring time, where the author can fix it. Vocabulary is per channel
+    (M3.1): email and linkedin_task have different slot sets; call_task has none
+    (structured brief, no skeleton).
     """
-    unknown = skeleton_slots(skeleton) - KNOWN_SKELETON_SLOTS
+    from craftsman.channels import get_channel
+
+    spec = get_channel(channel)
+    if not spec.uses_skeleton:
+        raise HTTPException(
+            422, f"channel '{channel}' uses a structured brief, not skeleton variants"
+        )
+    known = spec.llm_slots | spec.static_slots
+    unknown = skeleton_slots(skeleton) - known
     if unknown:
         raise HTTPException(
             422,
-            f"unknown skeleton placeholder(s): {sorted(unknown)}; "
-            f"valid slots are {sorted(KNOWN_SKELETON_SLOTS)}",
+            f"unknown skeleton placeholder(s) for channel '{channel}': {sorted(unknown)}; "
+            f"valid slots are {sorted(known)}",
         )
-    return {slot: "string" for slot in sorted(skeleton_slots(skeleton) & LLM_SLOTS)}
+    return {slot: "string" for slot in sorted(skeleton_slots(skeleton) & spec.llm_slots)}
 
 
 def _campaign_detail(db: Session, campaign: Campaign) -> CampaignDetailOut:
@@ -90,6 +101,8 @@ def _campaign_detail(db: Session, campaign: Campaign) -> CampaignDetailOut:
                 id=s.id,
                 step_order=s.step_order,
                 wait_days=s.wait_days,
+                channel=s.channel,
+                skip_on_expire=s.skip_on_expire,
                 variants=[
                     VariantDetailOut.model_validate(v)
                     for v in sorted(s.variants, key=lambda v: (v.name or "", v.id.hex))
@@ -171,11 +184,18 @@ def add_step(campaign_id: uuid.UUID, payload: StepCreate, db: Session = Depends(
         .limit(1)
     )
     step = SequenceStep(
-        campaign_id=campaign_id, step_order=(last or 0) + 1, wait_days=payload.wait_days
+        campaign_id=campaign_id,
+        step_order=(last or 0) + 1,
+        wait_days=payload.wait_days,
+        channel=payload.channel,
+        skip_on_expire=payload.skip_on_expire,
     )
     db.add(step)
     db.flush()
-    return StepOut(id=step.id, step_order=step.step_order, wait_days=step.wait_days, variants=[])
+    return StepOut(
+        id=step.id, step_order=step.step_order, wait_days=step.wait_days,
+        channel=step.channel, skip_on_expire=step.skip_on_expire, variants=[],
+    )
 
 
 @router.patch(
@@ -186,7 +206,9 @@ def add_step(campaign_id: uuid.UUID, payload: StepCreate, db: Session = Depends(
 def update_step(
     campaign_id: uuid.UUID, step_id: uuid.UUID, payload: StepUpdate, db: Session = Depends(get_db)
 ):
-    """wait_days only — read at scheduling time, so safe to change on a live campaign."""
+    """wait_days/skip_on_expire are read at scheduling time — safe to change live.
+    channel is structural (variants + generated content are per-channel), so it is
+    frozen once anyone is enrolled, like add/delete step."""
     step = db.scalar(
         select(SequenceStep).where(
             SequenceStep.id == step_id, SequenceStep.campaign_id == campaign_id
@@ -194,12 +216,27 @@ def update_step(
     )
     if step is None:
         raise HTTPException(404, "step not found in campaign")
-    step.wait_days = payload.wait_days
+    changes = payload.model_dump(exclude_unset=True)
+    if "channel" in changes and changes["channel"] != step.channel:
+        if _has_enrollments(db, campaign_id):
+            raise HTTPException(409, "campaign has enrollments; step channel is frozen")
+        if step.variants:
+            # skeletons are written in a channel's slot vocabulary — they don't port
+            raise HTTPException(
+                409, "step has variants; delete them before changing the channel"
+            )
+        step.channel = changes["channel"]
+    if changes.get("wait_days") is not None:
+        step.wait_days = changes["wait_days"]
+    if changes.get("skip_on_expire") is not None:
+        step.skip_on_expire = changes["skip_on_expire"]
     db.add(step)
     return StepOut(
         id=step.id,
         step_order=step.step_order,
         wait_days=step.wait_days,
+        channel=step.channel,
+        skip_on_expire=step.skip_on_expire,
         variants=[VariantDetailOut.model_validate(v) for v in step.variants],
     )
 
@@ -251,7 +288,7 @@ def add_variant(campaign_id: uuid.UUID, payload: VariantCreate, db: Session = De
     )
     if step is None:
         raise HTTPException(404, f"no step {payload.step_order} in campaign")
-    slot_schema = _checked_slot_schema(payload.skeleton)
+    slot_schema = _checked_slot_schema(payload.skeleton, step.channel)
     variant = Variant(
         step_id=step.id, name=payload.name,
         skeleton=payload.skeleton,
@@ -290,7 +327,8 @@ def update_variant(
                 f"variant has {variant.trials} recorded trial(s); its skeleton is frozen — "
                 "clone it as a new variant (fresh arm) and deactivate this one instead",
             )
-        variant.slot_schema = _checked_slot_schema(changes["skeleton"])
+        step = db.get(SequenceStep, variant.step_id)
+        variant.slot_schema = _checked_slot_schema(changes["skeleton"], step.channel)
         variant.skeleton = changes["skeleton"]
     if "name" in changes:
         variant.name = changes["name"]
@@ -314,10 +352,18 @@ async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     if campaign is None:
         raise HTTPException(404, "campaign not found")
     steps = db.scalars(select(SequenceStep).where(SequenceStep.campaign_id == campaign_id)).all()
+    if not steps:
+        raise HTTPException(400, "campaign has no steps")
+    # skeleton-based steps (email, linkedin_task) need ≥1 variant somewhere to have
+    # anything to generate; call_task steps use a structured brief and need none (M3.1)
+    from craftsman.channels import get_channel
+
+    skeleton_steps = [s for s in steps if get_channel(s.channel).uses_skeleton]
     has_variants = any(
-        db.scalar(select(Variant.id).where(Variant.step_id == s.id).limit(1)) for s in steps
+        db.scalar(select(Variant.id).where(Variant.step_id == s.id).limit(1))
+        for s in skeleton_steps
     )
-    if not has_variants:
+    if skeleton_steps and not has_variants:
         raise HTTPException(400, "campaign has no variants; add at least one per step")
 
     settings = get_settings()

@@ -14,6 +14,7 @@ from craftsman.api.routers import (
     leads,
     mailboxes,
     ops,
+    tasks,
     unsubscribe,
 )
 
@@ -59,6 +60,7 @@ app.include_router(mailboxes.router)
 app.include_router(analytics.router)
 app.include_router(keys.router)
 app.include_router(ops.router)
+app.include_router(tasks.router)
 app.include_router(unsubscribe.router)
 
 

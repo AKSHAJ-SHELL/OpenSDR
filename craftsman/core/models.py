@@ -189,6 +189,16 @@ class SequenceStep(Base):
     campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"))
     step_order: Mapped[int] = mapped_column(Integer, nullable=False)  # 1=opener, 2=bump, 3=breakup
     wait_days: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    # M3.1: email | linkedin_task | call_task (craftsman/channels.py). Email is the only
+    # autonomous channel; task channels queue validated content for a human.
+    channel: Mapped[str] = mapped_column(
+        Text, nullable=False, default="email", server_default=text("'email'")
+    )
+    # M3.1 (⛔ Gate M3 decision): default false = an undone task HOLDS the sequence
+    # (surfaced as overdue); true = expiry marks the task expired and advances.
+    skip_on_expire: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     campaign: Mapped[Campaign] = relationship(back_populates="steps")
     variants: Mapped[list["Variant"]] = relationship(back_populates="step")
@@ -221,7 +231,9 @@ class Enrollment(Base):
         Index(
             "idx_enroll_due",
             "next_action_at",
-            postgresql_where=text("state IN ('queued','ready','waiting','ooo_rescheduled')"),
+            postgresql_where=text(
+                "state IN ('queued','ready','waiting','ooo_rescheduled','awaiting_human_touch')"
+            ),
         ),
     )
 
@@ -271,6 +283,44 @@ class Message(Base):
 
     enrollment: Mapped[Enrollment | None] = relationship()
     variant: Mapped[Variant | None] = relationship()
+
+
+class TouchTask(Base):
+    """A human-touch task for an assisted-channel step (M3.1): the validated message
+    (LinkedIn) or grounded call brief, waiting for a human to perform the touch.
+
+    Idempotency mirrors the email send claim: UNIQUE(enrollment_id, step_order) makes a
+    duplicate generate_touch_task insert trip IntegrityError and skip. `payload` holds
+    lead-personalized content (person PII) — `erase_lead` deletes these rows explicitly.
+    Per M0.4 doctrine the FK does NOT cascade.
+    """
+
+    __tablename__ = "touch_tasks"
+    __table_args__ = (
+        UniqueConstraint("enrollment_id", "step_order", name="uq_touch_task_step"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    enrollment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("enrollments.id"), nullable=False, index=True
+    )
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)  # linkedin_task|call_task
+    variant_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("variants.id"))
+    # linkedin_task: {"message": str, "char_count": int, "slots": {...}}
+    # call_task:     {"brief": {"opener": ..., "pain_hypotheses": [...], "objection_notes": ...}}
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="open", server_default=text("'open'")
+    )  # open|done|skipped|expired|cancelled
+    outcome: Mapped[str | None] = mapped_column(Text)  # sent | connected|voicemail|no_answer
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    enrollment: Mapped[Enrollment] = relationship()
 
 
 class Mailbox(Base):

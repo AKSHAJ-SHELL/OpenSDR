@@ -119,6 +119,15 @@ def generate_and_send(self, enrollment_id: str):
                 SequenceStep.step_order == step_order,
             )
         )
+        # Channel guard (M3.1): email is the only channel this task may ever act on.
+        # A mis-enqueued task step must not produce an email — refuse and leave the
+        # enrollment recoverable (redrive), never send.
+        if step is not None and step.channel != "email":
+            log.error(
+                "generate_and_send refused %s step %s (enrollment %s) — not an email step",
+                step.channel, step_order, enrollment_id,
+            )
+            return
         variants = list(
             db.scalars(select(Variant).where(Variant.step_id == step.id, Variant.active)).all()
         )
