@@ -507,6 +507,8 @@ class TaskOut(BaseModel):
     campaign_name: str | None = None
     # grounded research highlights (trigger events + pain points from the brief)
     brief_highlights: list[str] = Field(default_factory=list)
+    # call_task only: true when a Twilio dialer is fully configured (M3.3)
+    dialer_available: bool = False
 
 
 class TaskCompleteRequest(BaseModel):

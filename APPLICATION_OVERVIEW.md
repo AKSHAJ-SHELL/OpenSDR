@@ -277,13 +277,21 @@ review queue has no release-and-send route).
 
 ### 6.6 Sequencer (`craftsman/sequencer/`)
 - `machine.py` — pure-function state machine; the transition table is data. States:
-  `queued | researching | ready | waiting | replied_interested | replied_objection | replied_not_now
-  | ooo_rescheduled | bounced | unsubscribed | finished_no_reply | error`. Terminal states never
-  re-scan. `"*"` wildcard routes BOUNCE/UNSUBSCRIBE from any non-terminal state.
+  `queued | researching | ready | waiting | awaiting_human_touch | replied_interested |
+  replied_objection | replied_not_now | ooo_rescheduled | bounced | unsubscribed |
+  finished_no_reply | error`. Terminal states never re-scan. `"*"` wildcard routes
+  BOUNCE/UNSUBSCRIBE from any non-terminal state. `awaiting_human_touch` (M3.1): an
+  assisted-channel step queued a validated task; TASK_DONE/TASK_SKIPPED (human, via
+  `/tasks`) or TASK_EXPIRED (tick, `skip_on_expire` steps only) return it to `waiting`;
+  replies route from it normally — paused, not deaf.
 - `scheduling.py` — `next_send_time`: earliest business-hours slot (9:00–16:30 lead-local, ±20min
   jitter, weekends skipped), returns UTC. Bad timezone → falls back to `America/Los_Angeles`.
 - `tick.py` — `tick()` scans due enrollments with `FOR UPDATE SKIP LOCKED` (batch 200), applies
-  timers, and calls the injected enqueue callbacks. `apply_event` writes the audit log.
+  timers, and calls the injected enqueue callbacks — routed per step channel (M3.1: email →
+  `generate_and_send`, assisted → `generate_touch_task`). `apply_event` writes the audit log.
+- `touch.py` — touch-task lifecycle (M3.1): `resolve_task` (done/skipped/expired → advances via
+  the state machine + `schedule_next_step`; refuses non-open tasks so a task can never advance a
+  sequence twice) and `cancel_open_tasks` (reply/bounce/unsub/suppression orphaned the task).
 
 ### 6.7 Sender & compliance (`craftsman/sender/`, `craftsman/compliance/`)
 - `smtp.py` — `run_presend_checks` (suppression → campaign daily cap → mailbox pick with
@@ -462,6 +470,14 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `redrive_unsent_after_minutes` | 15; unsent-claim sweep age cutoff | `core/config.py`, `sequencer/redrive.py` |
 | `mailpit_smtp_host` / `mailpit_smtp_port` | localhost / 1025 (`mailpit` in Docker); dry-run delivery target, regardless of mailbox SMTP | `core/config.py`, `sender/smtp.py deliver_to_mailpit` |
 | Dry-run sample cap | `n` ∈ [1, 10] per run (bounds LLM spend) | `core/schemas.py DryRunRequest` |
+| Step channel | `email` \| `linkedin_task` \| `call_task`; default email; registry in `craftsman/channels.py` | M3.1; migration `0010` |
+| `touch_task_due_days` | 3 business days until a task is due | config (M3) |
+| Task expiry default ⛔ | `skip_on_expire` false — undone task **holds** the sequence, shows overdue; per-step opt-in advances on expiry | ⛔ Gate M3 decision; `sequence_steps.skip_on_expire` |
+| `linkedin_note_max_chars` | 280 (rendered note; grade ≤ 8 also applies, no subject gate) | config (⛔ Gate M3 approved) |
+| Call-brief word caps | `call_opener_max_words` 25 / `call_pain_max_words` 20 / `call_objection_max_words` 40; no grade check (fragments) | config (⛔ Gate M3 approved) |
+| Task idempotency | one task per (enrollment, step); unique `uq_touch_task_step`, claim pattern mirrors sends | `workers/tasks.py generate_touch_task` |
+| Task bandit isolation | task channels never update copy posteriors (uniform variant rotation); revisit in M6 | roadmap M3.3 decision |
+| `TWILIO_ACCOUNT_SID/_AUTH_TOKEN/_FROM_NUMBER/_OPERATOR_NUMBER` | "" (click-to-dial off; `tel:` link always works). Operator-first: Twilio rings **you**, then dials the lead | config; `sender/dialer.py` |
 
 ---
 

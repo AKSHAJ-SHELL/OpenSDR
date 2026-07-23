@@ -71,19 +71,55 @@ function LinkedInBody({ task }: { task: Task }) {
   );
 }
 
+function DialButton({ task }: { task: Task }) {
+  const [state, setState] = useState<"idle" | "dialing" | "ringing" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+  return (
+    <span className="flex items-center gap-2">
+      <button
+        type="button"
+        disabled={state === "dialing"}
+        onClick={async () => {
+          setState("dialing");
+          setMessage(null);
+          try {
+            const res = await api.dialTask(task.id);
+            setState("ringing");
+            setMessage(`Ringing your phone (${res.to_operator})…`);
+          } catch (e) {
+            setState("error");
+            setMessage(e instanceof Error ? e.message : String(e));
+          }
+        }}
+        className={ghostBtn}
+      >
+        {state === "dialing" ? "Dialing…" : "Click to dial"}
+      </button>
+      {message ? (
+        <span className={`text-[11px] ${state === "error" ? "text-red-600" : "text-muted"}`}>
+          {message}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 function CallBody({ task }: { task: Task }) {
   const brief = task.payload.brief;
   if (!brief) return null;
   return (
     <div className="mt-3 rounded-lg border border-line bg-bg p-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-faint">
           Call brief · grounded, not a script
         </span>
         {task.phone ? (
-          <a href={`tel:${task.phone}`} className={ghostBtn}>
-            Call {task.phone}
-          </a>
+          <span className="flex items-center gap-2">
+            <a href={`tel:${task.phone}`} className={ghostBtn}>
+              Call {task.phone}
+            </a>
+            {task.dialer_available ? <DialButton task={task} /> : null}
+          </span>
         ) : (
           <span className="text-[11px] text-faint">no phone on lead</span>
         )}

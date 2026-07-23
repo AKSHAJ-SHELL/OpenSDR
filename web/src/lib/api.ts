@@ -177,6 +177,8 @@ export const api = {
   completeTask: (id: string, outcome?: string) =>
     post<Task>(`/tasks/${id}/complete`, outcome ? { outcome } : {}),
   skipTask: (id: string) => post<Task>(`/tasks/${id}/skip`),
+  dialTask: (id: string) =>
+    post<{ call_sid: string; to_operator: string }>(`/tasks/${id}/dial`),
   leadTimeline: (leadId: string) => get<TimelineItem[]>(`/leads/${leadId}/timeline`),
 };
 

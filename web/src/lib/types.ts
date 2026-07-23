@@ -327,6 +327,7 @@ export type Task = {
   campaign_id: string | null;
   campaign_name: string | null;
   brief_highlights: string[];
+  dialer_available: boolean;
 };
 
 export type TimelineItem = {

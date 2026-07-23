@@ -40,6 +40,13 @@ def _brief_highlights(company: Company | None) -> list[str]:
     return highlights[:5]
 
 
+def _dialer_available() -> bool:
+    from craftsman.core.config import get_settings
+    from craftsman.sender.dialer import build_dialer
+
+    return build_dialer(get_settings()) is not None
+
+
 def _task_out(db: Session, task: TouchTask, now: datetime) -> TaskOut:
     enrollment = db.get(Enrollment, task.enrollment_id)
     lead = db.get(Lead, enrollment.lead_id) if enrollment else None
@@ -70,6 +77,7 @@ def _task_out(db: Session, task: TouchTask, now: datetime) -> TaskOut:
         campaign_id=campaign.id if campaign else None,
         campaign_name=campaign.name if campaign else None,
         brief_highlights=_brief_highlights(company),
+        dialer_available=task.channel == "call_task" and _dialer_available(),
     )
 
 
@@ -145,6 +153,48 @@ def complete_task(task_id: uuid.UUID, body: TaskCompleteRequest, db: Session = D
     except ValueError as e:
         raise HTTPException(409, str(e))
     return _task_out(db, task, datetime.now(timezone.utc))
+
+
+@router.post(
+    "/{task_id}/dial", dependencies=[Depends(require_scope("operate"))]
+)
+async def dial_task(task_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Click-to-dial (M3.3, optional): rings the OPERATOR's phone first, then
+    connects the lead — Craftsman never robocalls a prospect. 400 unless a
+    complete BYO Twilio config is present; the tel: link always works without it.
+    Dialing does not resolve the task — the human records the outcome via
+    /complete after the call."""
+    from craftsman.core.config import get_settings
+    from craftsman.sender.dialer import DialerError, build_dialer
+
+    task = db.get(TouchTask, task_id)
+    if task is None:
+        raise HTTPException(404, "task not found")
+    if task.channel != "call_task":
+        raise HTTPException(422, "only call tasks can dial")
+    if task.status != "open":
+        raise HTTPException(409, f"task is {task.status}, not open")
+
+    enrollment = db.get(Enrollment, task.enrollment_id)
+    lead = db.get(Lead, enrollment.lead_id) if enrollment else None
+    if lead is None or not lead.phone:
+        raise HTTPException(422, "lead has no phone number")
+    if is_suppressed(db, lead.email):
+        cancel_open_tasks(db, task.enrollment_id, reason="suppressed")
+        raise HTTPException(409, "lead is suppressed; task cancelled — do not contact")
+
+    dialer = build_dialer(get_settings())
+    if dialer is None:
+        raise HTTPException(
+            400,
+            "no dialer configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, "
+            "TWILIO_FROM_NUMBER and TWILIO_OPERATOR_NUMBER, or use the tel: link",
+        )
+    try:
+        sid = await dialer.dial(lead.phone)
+    except DialerError as e:
+        raise HTTPException(502, str(e))
+    return {"call_sid": sid, "to_operator": dialer.operator_number}
 
 
 @router.post(
