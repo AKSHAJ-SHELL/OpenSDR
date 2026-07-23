@@ -9,6 +9,7 @@ import type {
   ImportResult,
   InboxMessage,
   Lead,
+  LeadEnrichment,
   Mailbox,
   Overview,
   ReviewAction,
@@ -103,6 +104,7 @@ export const api = {
     return get<Lead[]>(qs ? `/leads?${qs}` : "/leads");
   },
   importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
+  leadEnrichments: (id: string) => get<LeadEnrichment[]>(`/leads/${id}/enrichments`),
   suppressLead: (id: string) => post<void>(`/leads/${id}/suppress`),
   eraseLead: (id: string) => del<void>(`/leads/${id}/erase`),
   reviewAction: (itemId: string, action: ReviewAction) =>

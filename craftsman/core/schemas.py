@@ -38,19 +38,6 @@ class ReplyClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
-class LeadEnrichment(BaseModel):
-    """Common output shape for enrichment adapters (Apollo, Hunter, ...)."""
-
-    email: EmailStr | None = None
-    first_name: str | None = None
-    last_name: str | None = None
-    title: str | None = None
-    linkedin_url: str | None = None
-    company_name: str | None = None
-    company_domain: str | None = None
-    company_description: str | None = None
-
-
 # ---------------------------------------------------------------- API schemas
 
 
@@ -60,6 +47,8 @@ class LeadOut(BaseModel):
     first_name: str | None
     last_name: str | None
     title: str | None
+    seniority: str | None = None  # enrichment-fillable (M2.1)
+    phone: str | None = None  # enrichment-fillable (M2.1)
     status: str
     icp_score: float | None
     email_verified: bool
@@ -72,6 +61,18 @@ class LeadOut(BaseModel):
     icp_scored_campaign_id: uuid.UUID | None = None
     icp_scored_campaign_name: str | None = None
     icp_matched_keyword: str | None = None  # derived from title at read time
+
+    model_config = {"from_attributes": True}
+
+
+class LeadEnrichmentOut(BaseModel):
+    """One provenance row: which provider said what about a lead, and when (M2.1)."""
+
+    field: str
+    value: str
+    source: str
+    confidence: float
+    fetched_at: datetime
 
     model_config = {"from_attributes": True}
 

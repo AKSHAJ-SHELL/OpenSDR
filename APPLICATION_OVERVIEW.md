@@ -146,8 +146,9 @@ path (used by tests and the seed scripts). *(M0.2)*
 
 | Table | Key fields | Notes |
 |---|---|---|
-| **companies** | `domain` (unique), `research_brief` (JSONB), `research_fetched_at`, `embedding` Vector(1024) | Research cached here, 30d TTL |
-| **leads** | `email` (unique), `company_id` FK, name/title/linkedin, `timezone` (default `America/Los_Angeles`), `email_verified`, `icp_score` + provenance (`icp_cosine`, `icp_rule`, `icp_scored_campaign_id` FK, `icp_scored_at`), `status` (new/verified/disqualified/suppressed), `source` | The canonical PII row. Score is per-*last-activation*: provenance records which campaign and when (M1.3, `migrations/0006`) |
+| **companies** | `domain` (unique), `name`, `industry`/`size`/`description` (enrichment-fillable, M2.1), `research_brief` (JSONB), `research_fetched_at`, `embedding` Vector(1024) | Research cached here, 30d TTL |
+| **leads** | `email` (unique), `company_id` FK, name/title/linkedin + `seniority`/`phone` (enrichment-fillable, M2.1), `timezone` (default `America/Los_Angeles`), `email_verified`, `icp_score` + provenance (`icp_cosine`, `icp_rule`, `icp_scored_campaign_id` FK, `icp_scored_at`), `status` (new/verified/disqualified/suppressed), `source` | The canonical PII row. Score is per-*last-activation*: provenance records which campaign and when (M1.3, `migrations/0006`) |
+| **lead_enrichments** | `lead_id` FK (no cascade — M0.4 doctrine), `field`, `value`, `source`, `confidence`, `fetched_at` | Append-only enrichment provenance (M2.1, `migrations/0008`): who said what, even when the CSV value won. PII — deleted by `erase_lead` |
 | **campaigns** | `name`, `icp_description`, `value_prop`, `sender_persona` (JSONB), `daily_cap` (50), `status` (draft/active/paused/done), `icp_embedding` Vector(1024) | |
 | **sequence_steps** | `campaign_id` FK, `step_order` (1=opener,2=bump,3=breakup), `wait_days` (3); unique(campaign,step_order) | Drip structure |
 | **variants** | `step_id` FK, `name` (pain_led/trigger_led/question_led), `skeleton`, `slot_schema` (JSONB), `alpha`/`beta` (Beta prior 1/1), `active` | **Each variant = a bandit arm** |
@@ -190,9 +191,15 @@ research brief (`ResearchBrief`), the copy slots (`SlotFill`), and the reply lab
   Company+Lead. Returns `ImportResult{imported,deduped,suppressed,errors}`.
 - `verify.py` — `syntax_ok` → `mx_hosts` (dnspython MX) → optional `smtp_rcpt_ok` (SMTP RCPT probe
   on port 25, only if `do_rcpt=True`). This is the "syntax → MX → SMTP" verification the README claims.
-- `adapters.py` — Apollo/Hunter enrichment adapters. **⚠️ Orphaned:** no caller in the ingest→send
-  path; `enrich_lead` uses `verify.py` only. Dead code or unwired feature. They still define real
-  external API calls (Apollo, Hunter).
+- `enrichment.py` — the BYO-key enrichment framework (M2.1; the former orphaned `adapters.py`
+  promoted into the pipeline). `EnrichmentProvider.enrich(input) -> EnrichmentResult` protocol;
+  Apollo + Hunter + null implementations, each with a single monkeypatchable `_fetch` network seam.
+  `chain_enrich` runs providers in `ENRICHMENT_PROVIDERS` order with per-field first-writer-wins and
+  per-provider failure isolation (a dead provider is logged + skipped, never raised).
+  `apply_enrichment` records provenance for every winning field, then fills **only empty** canonical
+  columns — operator CSV data is never overwritten. `enrich_lead` (workers) runs verify → enrich;
+  enrichment failures never cost a lead its verification, and unverified leads are never enriched
+  (no provider spend on dead addresses). Empty `ENRICHMENT_PROVIDERS` ⇒ verify-only.
 
 ### 6.2 Research agent (`craftsman/research/`)
 - `fetch.py` — `httpx` GETs `https://{domain}` + `/about`, `/about-us`, `/company`; strips HTML via
@@ -312,6 +319,7 @@ single highest-severity gap for enterprise use.
 |---|---|---|---|
 | POST | `/leads/import` | CSV import → leads + enqueue verify | ✅ |
 | GET | `/leads` | list leads (`score_gte`, `status`, `limit`); returns score provenance + matched keyword | |
+| GET | `/leads/{id}/enrichments` | enrichment provenance rows: field/value/source/confidence/fetched_at (M2.1) | |
 | POST | `/leads/{id}/suppress` | manual suppress — stops mail, keeps the row (idempotent) | ✅ |
 | DELETE | `/leads/{id}/erase` | GDPR erase — full multi-store cascade (M0.4, §11-C2) | ✅ admin |
 | GET/GET | `/campaigns`, `/campaigns/{id}` | list / fetch | |
@@ -342,7 +350,7 @@ auth headers).
 | Page | File | Shows | Interactive (client) parts |
 |---|---|---|---|
 | Overview `/` | `app/page.tsx` | Metric cards (Sent, Reply rate, Interested, Copy blocked), "Needs attention" (interested + review), pipeline state bars, mailbox health | none |
-| Leads | `app/leads/page.tsx` + `leads/*` | CSV import, status/min-ICP filters (URL-driven), table with score-breakdown popover (cosine/rule/matched keyword/scoring campaign), per-row suppress/erase | ✅ import, suppress, erase (typed-confirm), filter refetch (M1.3) |
+| Leads | `app/leads/page.tsx` + `leads/*` | CSV import, status/min-ICP filters (URL-driven), table with score-breakdown popover (cosine/rule/matched keyword/scoring campaign), source column with enrichment-provenance popover (fetched on open, M2.1), per-row suppress/erase | ✅ import, suppress, erase (typed-confirm), filter refetch (M1.3), provenance fetch (M2.1) |
 | Review | `app/review/page.tsx` + `ReviewQueue` | Blocked-copy cards (validator errors + rejected slots → retry/skip/kill) and uncertain-classification cards (reply + approve/override) | ✅ reviewAction + reclassify→resolve (browser POST, M1.3) |
 | Inbox | `app/inbox/page.tsx` + `InboxView` | Thread list/detail, label filter tabs | ✅ filter refetch + **reclassify** (browser POST) |
 | Campaigns | `app/campaigns/page.tsx` + `CampaignActions` | Card per campaign | ✅ **Activate/Pause** (browser POST) |
@@ -385,6 +393,9 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `classifier_confidence_threshold` | 0.7 | config |
 | `bandit_deactivate_min_trials` | 30 | config |
 | `gdpr_mode` | False | config |
+| `enrichment_providers` | "" (enrichment disabled — verify-only) | config |
+| `apollo_api_key` / `hunter_api_key` | "" (a listed provider with no key is skipped) | config |
+| Enrichment provider confidence | apollo 0.9 / hunter 0.85 (fixed; providers report none per-field) | `ingest/enrichment.py` |
 | Fuzzy grounding threshold (entities only) | 90.0 | `validator.py:14` |
 | Numeric grounding | exact match after normalization; suffixes k/m/b/bn + thousand/million/billion; symbols $€£ value-interchangeable; percent strict | `validator.py normalize_numeric` |
 | Subject/body/grade caps | 7 words / 90 words / grade 8 | `validator.py:15-17` |

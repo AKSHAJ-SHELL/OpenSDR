@@ -357,6 +357,16 @@ def run_dry_run(dry_run_id: str):
 
 @app.task
 def enrich_lead(lead_id: str):
+    """Verify, then enrich. Order matters twice over: enrichment only spends
+    provider API budget on addresses that verified, and any enrichment failure
+    is swallowed so it can never cost the lead its verification."""
+    from craftsman.core.config import get_settings
+    from craftsman.ingest.enrichment import (
+        EnrichmentInput,
+        apply_enrichment,
+        build_enrichment_chain,
+        chain_enrich,
+    )
     from craftsman.ingest.verify import verify_email
 
     with session_scope() as db:
@@ -368,6 +378,22 @@ def enrich_lead(lead_id: str):
             if lead.status == "new":
                 lead.status = "verified"
         db.add(lead)
+
+        if not lead.email_verified:
+            return
+        try:  # noqa: SIM105 — enrichment must never un-verify a lead
+            chain = build_enrichment_chain(get_settings())
+            if not chain:
+                return
+            company = db.get(Company, lead.company_id) if lead.company_id else None
+            inp = EnrichmentInput(
+                email=lead.email, company_domain=company.domain if company else None
+            )
+            merged, provenance = _run(chain_enrich(chain, inp))
+            if merged:
+                apply_enrichment(db, lead, merged, provenance)
+        except Exception as e:  # noqa: BLE001
+            log.warning("enrichment for lead %s failed (verify kept): %s", lead_id, e)
 
 
 # ------------------------------------------------------------------ inbox

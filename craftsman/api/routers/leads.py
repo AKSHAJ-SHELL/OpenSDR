@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.compliance.suppression import erase_lead, suppress
-from craftsman.core.models import Campaign, Lead
-from craftsman.core.schemas import ImportResult, LeadOut
+from craftsman.core.models import Campaign, Lead, LeadEnrichmentRecord
+from craftsman.core.schemas import ImportResult, LeadEnrichmentOut, LeadOut
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -58,6 +58,25 @@ def list_leads(
         item.icp_matched_keyword = matched_seniority_keyword(lead.title)
         out.append(item)
     return out
+
+
+@router.get(
+    "/{lead_id}/enrichments",
+    response_model=list[LeadEnrichmentOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def list_enrichments(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Provenance for every enriched field: who said what, and when (M2.1).
+
+    Rows exist even when the canonical column kept operator-supplied data —
+    disagreement between your CSV and your provider stays inspectable."""
+    if db.get(Lead, lead_id) is None:
+        raise HTTPException(404, "lead not found")
+    return db.scalars(
+        select(LeadEnrichmentRecord)
+        .where(LeadEnrichmentRecord.lead_id == lead_id)
+        .order_by(LeadEnrichmentRecord.fetched_at.desc(), LeadEnrichmentRecord.field)
+    ).all()
 
 
 @router.post("/{lead_id}/suppress", status_code=204, dependencies=[Depends(require_scope("operate"))])

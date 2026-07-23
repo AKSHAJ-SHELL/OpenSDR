@@ -4,6 +4,7 @@ import { LeadActions } from "@/components/leads/LeadActions";
 import { LeadFilters } from "@/components/leads/LeadFilters";
 import { LeadImport } from "@/components/leads/LeadImport";
 import { ScoreCell } from "@/components/leads/ScoreCell";
+import { SourceCell } from "@/components/leads/SourceCell";
 import { ApiDown } from "@/components/ui/ApiDown";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -60,6 +61,7 @@ export default async function LeadsPage({
                   <th className="px-5 py-3 font-semibold">Lead</th>
                   <th className="px-5 py-3 font-semibold">Title</th>
                   <th className="px-5 py-3 font-semibold">ICP</th>
+                  <th className="px-5 py-3 font-semibold">Source</th>
                   <th className="px-5 py-3 font-semibold">Status</th>
                   <th className="px-5 py-3 font-semibold">Verified</th>
                   <th className="px-5 py-3 text-right font-semibold">Actions</th>
@@ -80,6 +82,9 @@ export default async function LeadsPage({
                       <td className="px-5 py-3.5 text-muted">{lead.title || "—"}</td>
                       <td className="px-5 py-3.5">
                         <ScoreCell lead={lead} />
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <SourceCell lead={lead} />
                       </td>
                       <td className="px-5 py-3.5">
                         <Badge tone={statusTone(lead.status)}>{lead.status}</Badge>

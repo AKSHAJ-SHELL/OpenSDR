@@ -58,7 +58,7 @@ The dashboard renders the Beta PDFs converging live (`Bandit` page, with an inte
 
 FastAPI + Postgres/pgvector + Celery/Redis. One `docker compose up` brings up the API, workers, beat scheduler, Next.js dashboard (`web/`), and a [Mailpit](https://mailpit.axllent.org/) sandbox for testing without touching real inboxes.
 
-Pipeline per lead: ingest → verify email → embed + ICP-score → research (cached 30d per company) → enroll → per step: bandit picks variant → copywriter fills slots → validator gates → send engine dispatches in-window → inbox poller catches the reply → classifier updates state → bandit posterior updates → human notified if interested.
+Pipeline per lead: ingest → verify email → enrich (optional, BYO provider keys) → embed + ICP-score → research (cached 30d per company) → enroll → per step: bandit picks variant → copywriter fills slots → validator gates → send engine dispatches in-window → inbox poller catches the reply → classifier updates state → bandit posterior updates → human notified if interested.
 
 Key modules:
 
@@ -144,6 +144,18 @@ row (needs `operate`); **Erase** is the irreversible GDPR delete and needs `admi
 which the dashboard key deliberately lacks by default, so the button explains the 403
 instead of failing silently. Erase from an admin key, or widen the dashboard key's scope
 only if you accept the blast radius.
+
+**Enrichment (bring your own keys).** After a lead verifies, an optional provider chain
+(Apollo, Hunter — your accounts, your keys) fills what your CSV left blank: title,
+seniority, phone, LinkedIn, company industry/size/description. Set
+`ENRICHMENT_PROVIDERS=apollo,hunter` (precedence order) plus the matching
+`APOLLO_API_KEY`/`HUNTER_API_KEY`; leave it unset and the pipeline is verify-only. Two
+promises: a dead provider never blocks verification, and a provider value never
+overwrites data you supplied — every provider answer is recorded per-field in a
+provenance table (who said what, when, at what confidence; click a lead's **Source** in
+the dashboard to see it), but your CSV wins where it already had an answer. There is no
+proprietary contact database here and we don't pretend otherwise: results come from
+*your* provider accounts and are labeled with their source.
 
 **Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
 *blocked copy* (the validator rejected both generation attempts, so the enrollment is

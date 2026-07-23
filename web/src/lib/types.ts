@@ -14,6 +14,8 @@ export type Lead = {
   first_name: string | null;
   last_name: string | null;
   title: string | null;
+  seniority: string | null;
+  phone: string | null;
   status: string;
   icp_score: number | null;
   email_verified: boolean;
@@ -24,6 +26,15 @@ export type Lead = {
   icp_scored_campaign_id: string | null;
   icp_scored_campaign_name: string | null;
   icp_matched_keyword: string | null;
+};
+
+/** One provenance row: which provider said what about a lead, and when (M2.1). */
+export type LeadEnrichment = {
+  field: string;
+  value: string;
+  source: string;
+  confidence: number;
+  fetched_at: string;
 };
 
 export type ImportResult = {

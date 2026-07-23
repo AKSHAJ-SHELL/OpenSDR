@@ -16,6 +16,7 @@ from craftsman.core.models import (
     DryRunItem,
     Enrollment,
     Lead,
+    LeadEnrichmentRecord,
     Message,
     ReviewQueueItem,
     SuppressionEntry,
@@ -103,7 +104,7 @@ def erase_lead(db: Session, lead: Lead) -> None:
 
     Deletes everything that identifies the person: review-queue items, messages
     (inbound reply text is prospect-authored PII), enrollments, unsubscribe tokens,
-    and the lead row. Audit-log rows are KEPT but anonymized (enrollment link
+    enrichment provenance rows, and the lead row. Audit-log rows are KEPT but anonymized (enrollment link
     severed, identifiers scrubbed from detail) — anonymized rows no longer relate
     to an identifiable person, and the aggregate history stays useful. The cached
     company research brief is scrubbed of person mentions; company facts stay.
@@ -157,6 +158,12 @@ def erase_lead(db: Session, lead: Lead) -> None:
     # dry-run items hold the person's email and personalized copy
     for item in db.scalars(select(DryRunItem).where(DryRunItem.lead_id == lead.id)).all():
         db.delete(item)
+
+    # enrichment provenance rows carry provider-sourced PII (title, phone, LinkedIn)
+    for rec in db.scalars(
+        select(LeadEnrichmentRecord).where(LeadEnrichmentRecord.lead_id == lead.id)
+    ).all():
+        db.delete(rec)
 
     # scrub the cached research brief; deliberately no re-fetch (a re-scrape of a
     # team/news page could pull the person's name right back into the cache)

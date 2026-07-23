@@ -35,6 +35,11 @@ class Company(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     domain: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     name: Mapped[str | None] = mapped_column(Text)
+    # Enrichment-fillable facts (M2.1) — written only when empty, provenance in
+    # lead_enrichments. `size` is text: providers report counts OR ranges ("51-200").
+    industry: Mapped[str | None] = mapped_column(Text)
+    size: Mapped[str | None] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)
     research_brief: Mapped[dict | None] = mapped_column(JSONB)
     research_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     embedding: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIM))
@@ -51,6 +56,8 @@ class Lead(Base):
     first_name: Mapped[str | None] = mapped_column(Text)
     last_name: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(Text)
+    seniority: Mapped[str | None] = mapped_column(Text)  # enrichment-fillable (M2.1)
+    phone: Mapped[str | None] = mapped_column(Text)  # enrichment-fillable (M2.1)
     linkedin_url: Mapped[str | None] = mapped_column(Text)
     timezone: Mapped[str] = mapped_column(Text, default="America/Los_Angeles")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -68,6 +75,30 @@ class Lead(Base):
     )
 
     company: Mapped[Company | None] = relationship(back_populates="leads")
+
+
+class LeadEnrichmentRecord(Base):
+    """Append-only provenance: which provider said what about a lead, and when.
+
+    One row per field the chain resolved — including fields whose canonical column
+    already held operator data (the audit trail shows the disagreement). Values are
+    prospect PII: `erase_lead` deletes these rows explicitly. Per the M0.4 decision
+    the FK does NOT cascade — accidental lead deletion stays blocked by constraint.
+    """
+
+    __tablename__ = "lead_enrichments"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leads.id"), nullable=False, index=True
+    )
+    field: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # apollo|hunter|...
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
 
 
 class Campaign(Base):

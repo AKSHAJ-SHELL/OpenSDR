@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://craftsman:craftsman@localhost:5432/craftsman"
     redis_url: str = "redis://localhost:6379/0"
 
+    # Enrichment (M2.1) — bring your own keys. `enrichment_providers` is the
+    # comma-separated precedence order (e.g. "apollo,hunter"); empty = enrichment
+    # disabled, pipeline is verify-only. A listed provider with a blank key is skipped.
+    apollo_api_key: str = ""
+    hunter_api_key: str = ""
+    enrichment_providers: str = ""
+
     # Secrets
     craftsman_secret_key: str = ""
 
