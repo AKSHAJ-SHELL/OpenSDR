@@ -147,7 +147,7 @@ path (used by tests and the seed scripts). *(M0.2)*
 | Table | Key fields | Notes |
 |---|---|---|
 | **companies** | `domain` (unique), `research_brief` (JSONB), `research_fetched_at`, `embedding` Vector(1024) | Research cached here, 30d TTL |
-| **leads** | `email` (unique), `company_id` FK, name/title/linkedin, `timezone` (default `America/Los_Angeles`), `email_verified`, `icp_score`, `status` (new/verified/disqualified/suppressed), `source` | The canonical PII row |
+| **leads** | `email` (unique), `company_id` FK, name/title/linkedin, `timezone` (default `America/Los_Angeles`), `email_verified`, `icp_score` + provenance (`icp_cosine`, `icp_rule`, `icp_scored_campaign_id` FK, `icp_scored_at`), `status` (new/verified/disqualified/suppressed), `source` | The canonical PII row. Score is per-*last-activation*: provenance records which campaign and when (M1.3, `migrations/0006`) |
 | **campaigns** | `name`, `icp_description`, `value_prop`, `sender_persona` (JSONB), `daily_cap` (50), `status` (draft/active/paused/done), `icp_embedding` Vector(1024) | |
 | **sequence_steps** | `campaign_id` FK, `step_order` (1=opener,2=bump,3=breakup), `wait_days` (3); unique(campaign,step_order) | Drip structure |
 | **variants** | `step_id` FK, `name` (pain_led/trigger_led/question_led), `skeleton`, `slot_schema` (JSONB), `alpha`/`beta` (Beta prior 1/1), `active` | **Each variant = a bandit arm** |
@@ -311,8 +311,9 @@ single highest-severity gap for enterprise use.
 | Method | Path | Purpose | Mutates |
 |---|---|---|---|
 | POST | `/leads/import` | CSV import → leads + enqueue verify | ✅ |
-| GET | `/leads` | list leads (`score_gte`, `status`, `limit`) | |
-| DELETE | `/leads/{id}/erase` | GDPR erase — full multi-store cascade (M0.4, §11-C2) | ✅ |
+| GET | `/leads` | list leads (`score_gte`, `status`, `limit`); returns score provenance + matched keyword | |
+| POST | `/leads/{id}/suppress` | manual suppress — stops mail, keeps the row (idempotent) | ✅ |
+| DELETE | `/leads/{id}/erase` | GDPR erase — full multi-store cascade (M0.4, §11-C2) | ✅ admin |
 | GET/GET | `/campaigns`, `/campaigns/{id}` | list / fetch | |
 | POST | `/campaigns` | create campaign + steps | ✅ |
 | POST | `/campaigns/{id}/variants` | add copy variant (bandit arm) | ✅ |
@@ -320,7 +321,8 @@ single highest-severity gap for enterprise use.
 | POST | `/campaigns/{id}/pause` | pause campaign | ✅ |
 | GET | `/campaigns/{id}/bandit` | per-variant posteriors | |
 | GET | `/inbox` | latest inbound (label filter) | |
-| GET | `/inbox/review` | unresolved review-queue items | |
+| GET | `/inbox/review` | unresolved review-queue items — typed, with `message_id` + lead/campaign/enrollment context (M1.3) | |
+| POST | `/inbox/review/{id}/action` | retry / skip / kill (re-drive) or **resolve** (clear without re-driving) | ✅ |
 | POST | `/inbox/{id}/reclassify` | human classification override (confidence 1.0) | ✅ |
 | POST/PATCH/GET | `/mailboxes` … | create/update/list mailboxes (stores encrypted secrets) | ✅ |
 | GET | `/analytics/overview` | sent/replies/interested/reply_rate/rejections/state histograms | |
@@ -339,7 +341,8 @@ auth headers).
 | Page | File | Shows | Interactive (client) parts |
 |---|---|---|---|
 | Overview `/` | `app/page.tsx` | Metric cards (Sent, Reply rate, Interested, Copy blocked), "Needs attention" (interested + review), pipeline state bars, mailbox health | none |
-| Leads | `app/leads/page.tsx` | Table: name/email, title, ICP score bar, status, verified | none (no erase UI wired) |
+| Leads | `app/leads/page.tsx` + `leads/*` | CSV import, status/min-ICP filters (URL-driven), table with score-breakdown popover (cosine/rule/matched keyword/scoring campaign), per-row suppress/erase | ✅ import, suppress, erase (typed-confirm), filter refetch (M1.3) |
+| Review | `app/review/page.tsx` + `ReviewQueue` | Blocked-copy cards (validator errors + rejected slots → retry/skip/kill) and uncertain-classification cards (reply + approve/override) | ✅ reviewAction + reclassify→resolve (browser POST, M1.3) |
 | Inbox | `app/inbox/page.tsx` + `InboxView` | Thread list/detail, label filter tabs | ✅ filter refetch + **reclassify** (browser POST) |
 | Campaigns | `app/campaigns/page.tsx` + `CampaignActions` | Card per campaign | ✅ **Activate/Pause** (browser POST) |
 | Analytics | `app/analytics/page.tsx` + `BanditChart` | Converging Beta-PDF charts + per-variant table (recharts) | ✅ live client render of real posteriors |

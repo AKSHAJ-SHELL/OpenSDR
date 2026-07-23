@@ -18,6 +18,19 @@ export type Lead = {
   icp_score: number | null;
   email_verified: boolean;
   source: string | null;
+  icp_cosine: number | null;
+  icp_rule: number | null;
+  icp_scored_at: string | null;
+  icp_scored_campaign_id: string | null;
+  icp_scored_campaign_name: string | null;
+  icp_matched_keyword: string | null;
+};
+
+export type ImportResult = {
+  imported: number;
+  deduped: number;
+  suppressed: number;
+  errors: string[];
 };
 
 export type InboxMessage = {
@@ -139,7 +152,17 @@ export type ArmPosterior = {
 
 export type ReviewItem = {
   id: string;
-  kind: string;
+  kind: "classification" | "copywriter" | string;
+  message_id: string | null;
+  enrollment_id: string | null;
   payload: Record<string, unknown> | null;
   created_at: string | null;
+  lead_email: string | null;
+  lead_name: string | null;
+  campaign_name: string | null;
+  enrollment_state: string | null;
+  message_subject: string | null;
+  message_body: string | null;
 };
+
+export type ReviewAction = "retry" | "skip" | "kill" | "resolve";

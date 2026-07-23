@@ -64,8 +64,37 @@ class LeadOut(BaseModel):
     icp_score: float | None
     email_verified: bool
     source: str | None
+    # Score provenance (M1.3). NULL on leads scored before this was tracked, or never
+    # scored — the UI says so instead of fabricating a breakdown.
+    icp_cosine: float | None = None
+    icp_rule: float | None = None
+    icp_scored_at: datetime | None = None
+    icp_scored_campaign_id: uuid.UUID | None = None
+    icp_scored_campaign_name: str | None = None
+    icp_matched_keyword: str | None = None  # derived from title at read time
 
     model_config = {"from_attributes": True}
+
+
+class ReviewItemOut(BaseModel):
+    """A review-queue item with enough context to act on it.
+
+    `message_id` is what makes a `classification` item actionable (reclassify targets a
+    message); `enrollment_id` is what makes a `copywriter` item actionable (retry/skip/kill).
+    """
+
+    id: uuid.UUID
+    kind: str
+    message_id: uuid.UUID | None
+    enrollment_id: uuid.UUID | None
+    payload: dict | None
+    created_at: datetime | None
+    lead_email: str | None = None
+    lead_name: str | None = None
+    campaign_name: str | None = None
+    enrollment_state: str | None = None
+    message_body: str | None = None
+    message_subject: str | None = None
 
 
 class CampaignCreate(BaseModel):

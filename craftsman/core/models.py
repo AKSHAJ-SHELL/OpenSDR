@@ -55,6 +55,12 @@ class Lead(Base):
     timezone: Mapped[str] = mapped_column(Text, default="America/Los_Angeles")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     icp_score: Mapped[float | None] = mapped_column(Float)
+    # Score provenance (M1.3): a lead is re-scored by every campaign activation, so the
+    # bare score is meaningless without knowing which ICP produced it and from what parts.
+    icp_cosine: Mapped[float | None] = mapped_column(Float)
+    icp_rule: Mapped[float | None] = mapped_column(Float)
+    icp_scored_campaign_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("campaigns.id"))
+    icp_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, default="new")  # new|verified|disqualified|suppressed
     source: Mapped[str | None] = mapped_column(Text)  # csv|apollo|hunter
     created_at: Mapped[datetime] = mapped_column(

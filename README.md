@@ -111,6 +111,25 @@ dry-run has completed. Everything is equally scriptable against the API (`/docs`
 key-gated); once a variant's bandit arm has recorded trials its skeleton is frozen —
 clone it as a new variant instead of rewriting measured history.
 
+**Leads** (dashboard → **Leads**) is where day-to-day operators live. Import a CSV
+inline, filter by status or a minimum ICP score, and read *why* a lead scored what it
+did: hover the score bar for the honest breakdown — `cosine × 0.7` (semantic fit to your
+ICP) plus `rule × 0.3` (title seniority), the keyword that matched, and which campaign's
+activation produced the score. Leads scored before component tracking shipped say so
+rather than inventing a breakdown. Per-lead **Suppress** stops all mail while keeping the
+row (needs `operate`); **Erase** is the irreversible GDPR delete and needs `admin` —
+which the dashboard key deliberately lacks by default, so the button explains the 403
+instead of failing silently. Erase from an admin key, or widen the dashboard key's scope
+only if you accept the blast radius.
+
+**Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
+*blocked copy* (the validator rejected both generation attempts, so the enrollment is
+stuck — you get the validator's errors, the rejected slot text, and Retry / Skip step /
+Kill) and *uncertain classifications* (a reply the classifier scored below threshold, so
+no state change happened — you see the reply and Approve the model's label or override
+it). Approving applies the label at full confidence and clears the item **without**
+re-driving the sequence, so a human call never silently advances the campaign.
+
 > **⚠️ Exposure warning.** The API and dashboard bind to `localhost` by default.
 > **Do not expose port 8000 or 3000 to the internet.** Every API route now requires a
 > scoped key and the dashboard requires a login, but that is your *only* wall between a

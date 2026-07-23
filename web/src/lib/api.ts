@@ -5,10 +5,12 @@ import type {
   CampaignDetail,
   CampaignUpdate,
   DryRun,
+  ImportResult,
   InboxMessage,
   Lead,
   Mailbox,
   Overview,
+  ReviewAction,
   ReviewItem,
   Step,
   VariantDetail,
@@ -72,10 +74,41 @@ const post = <T,>(path: string, body?: unknown) => send<T>("POST", path, body);
 const patch = <T,>(path: string, body?: unknown) => send<T>("PATCH", path, body);
 const del = <T,>(path: string) => send<T>("DELETE", path);
 
+/** Multipart upload. Content-Type is deliberately unset so the browser adds the
+ *  boundary; the proxy forwards whatever it receives. */
+async function upload<T>(path: string, file: File): Promise<T> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(target(path), {
+    method: "POST",
+    cache: "no-store",
+    headers: { Accept: "application/json", ...authHeaders() },
+    body,
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+  }
+  return res.json() as Promise<T>;
+}
+
 export const api = {
   overview: () => get<Overview>("/analytics/overview"),
-  leads: (status?: string) =>
-    get<Lead[]>(status ? `/leads?status=${encodeURIComponent(status)}` : "/leads"),
+  leads: (params?: { status?: string; score_gte?: number; limit?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.score_gte != null) q.set("score_gte", String(params.score_gte));
+    if (params?.limit != null) q.set("limit", String(params.limit));
+    const qs = q.toString();
+    return get<Lead[]>(qs ? `/leads?${qs}` : "/leads");
+  },
+  importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
+  suppressLead: (id: string) => post<void>(`/leads/${id}/suppress`),
+  eraseLead: (id: string) => del<void>(`/leads/${id}/erase`),
+  reviewAction: (itemId: string, action: ReviewAction) =>
+    post<{ resolved: boolean; action: string; new_state: string | null }>(
+      `/inbox/review/${itemId}/action`,
+      { action },
+    ),
   inbox: (label?: string) =>
     get<InboxMessage[]>(label ? `/inbox?label=${encodeURIComponent(label)}` : "/inbox"),
   review: () => get<ReviewItem[]>("/inbox/review"),

@@ -298,7 +298,7 @@ def update_variant(
 async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     """Activate: score all verified leads against the ICP and enroll those above threshold."""
     from craftsman.scoring.embeddings import get_embedder
-    from craftsman.scoring.icp import icp_score, lead_text
+    from craftsman.scoring.icp import lead_text, score_breakdown
 
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
@@ -320,12 +320,19 @@ async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
         select(Lead).where(Lead.email_verified.is_(True), Lead.status == "verified")
     ).all()
     enrolled = 0
+    scored_at = datetime.now(timezone.utc)
     for lead in leads:
         company = lead.company
         text = lead_text(lead.title, company.name if company else None, None)
         lead_emb = (await embedder.embed([text]))[0]
-        score = icp_score(lead_emb, icp_emb, lead.title)
+        breakdown = score_breakdown(lead_emb, icp_emb, lead.title)
+        score = breakdown.score
         lead.icp_score = score
+        # provenance: which ICP produced this, and from what parts
+        lead.icp_cosine = breakdown.cosine
+        lead.icp_rule = breakdown.rule
+        lead.icp_scored_campaign_id = campaign.id
+        lead.icp_scored_at = scored_at
         if score < settings.icp_threshold:
             lead.status = "disqualified"
             db.add(lead)
