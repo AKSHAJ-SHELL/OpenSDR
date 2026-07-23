@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
-from craftsman.compliance.suppression import erase_lead
-from craftsman.core.models import Lead
+from craftsman.compliance.suppression import erase_lead, suppress
+from craftsman.core.models import Campaign, Lead
 from craftsman.core.schemas import ImportResult, LeadOut
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -39,12 +39,35 @@ def list_leads(
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    stmt = select(Lead).limit(limit)
+    from craftsman.scoring.icp import matched_seniority_keyword
+
+    stmt = (
+        select(Lead, Campaign.name)
+        .outerjoin(Campaign, Lead.icp_scored_campaign_id == Campaign.id)
+        .limit(limit)
+    )
     if score_gte is not None:
         stmt = stmt.where(Lead.icp_score >= score_gte)
     if status is not None:
         stmt = stmt.where(Lead.status == status)
-    return db.scalars(stmt).all()
+
+    out = []
+    for lead, campaign_name in db.execute(stmt).all():
+        item = LeadOut.model_validate(lead)
+        item.icp_scored_campaign_name = campaign_name
+        item.icp_matched_keyword = matched_seniority_keyword(lead.title)
+        out.append(item)
+    return out
+
+
+@router.post("/{lead_id}/suppress", status_code=204, dependencies=[Depends(require_scope("operate"))])
+def suppress_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Manual do-not-contact. Keeps the row (unlike erase) and is idempotent —
+    suppression is checked at generation AND send time, so this stops mail either way."""
+    lead = db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(404, "lead not found")
+    suppress(db, lead.email, reason="manual")
 
 
 @router.delete("/{lead_id}/erase", status_code=204, dependencies=[Depends(require_scope("admin"))])

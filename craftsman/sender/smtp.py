@@ -141,6 +141,32 @@ def build_email(
     return msg, message_id
 
 
+def build_dry_run_email(prepared: PreparedEmail) -> EmailMessage:
+    """Preview email for M1.2 dry-run: same compliance shape as build_email, but a
+    synthetic From, a placeholder unsubscribe URL (no token row is minted), and an
+    X-Craftsman-Dry-Run marker. Never used on the production send path."""
+    settings = get_settings()
+    msg = EmailMessage()
+    msg["Message-ID"] = make_msgid(domain="dry-run.localhost")
+    msg["Date"] = formatdate(localtime=False)
+    msg["From"] = "dry-run@localhost"
+    msg["To"] = prepared.to_email
+    msg["Subject"] = prepared.subject
+    msg["X-Craftsman-Dry-Run"] = "1"
+    unsub_url = f"{settings.unsubscribe_base_url}/u/dry-run-preview"
+    footer = f"\n\n--\n{settings.physical_address}\nUnsubscribe: {unsub_url}"
+    msg.set_content(prepared.body + footer)
+    return msg
+
+
+async def deliver_to_mailpit(msg: EmailMessage) -> None:
+    """Dry-run delivery: always Mailpit, regardless of any mailbox SMTP config."""
+    settings = get_settings()
+    await aiosmtplib.send(
+        msg, hostname=settings.mailpit_smtp_host, port=settings.mailpit_smtp_port
+    )
+
+
 async def deliver(mailbox: Mailbox, msg: EmailMessage) -> None:
     kwargs: dict = {
         "hostname": mailbox.smtp_host,
