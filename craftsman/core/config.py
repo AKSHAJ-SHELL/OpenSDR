@@ -23,6 +23,35 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://craftsman:craftsman@localhost:5432/craftsman"
     redis_url: str = "redis://localhost:6379/0"
 
+    # Enrichment (M2.1) — bring your own keys. `enrichment_providers` is the
+    # comma-separated precedence order (e.g. "apollo,hunter"); empty = enrichment
+    # disabled, pipeline is verify-only. A listed provider with a blank key is skipped.
+    apollo_api_key: str = ""
+    hunter_api_key: str = ""
+    enrichment_providers: str = ""
+
+    # Lead sourcing (M2.2) — BYO keys. `lead_source_providers` is the comma-separated set
+    # of enabled sources (e.g. "apollo,webhook"); empty = sourcing disabled. Apollo reuses
+    # `apollo_api_key`; the webhook source GETs `lead_source_webhook_url` (https only).
+    lead_source_providers: str = ""
+    lead_source_webhook_url: str = ""
+
+    # ICP scoring weights (M2.3). ⛔ Changing a default is a human decision (TESTING.md §0)
+    # — it alters who clears the threshold and gets emailed. No-signal leads use the 2-way
+    # (cosine/rule) blend; leads whose company has signals use the 3-way blend.
+    icp_cosine_weight: float = 0.7  # no-signal blend
+    icp_rule_weight: float = 0.3
+    icp_signal_cosine_weight: float = 0.6  # with-signal blend
+    icp_signal_rule_weight: float = 0.25
+    icp_signal_weight: float = 0.15
+
+    # Intent signals (M2.3). `signal_collectors` = comma-separated enabled collectors
+    # (e.g. "homepage_diff,careers_diff,rss_funding"); empty = no collection. Each is
+    # independently disableable. The funding collector reads an RSS/news feed URL.
+    signal_collectors: str = ""
+    signal_funding_rss_url: str = ""
+    signal_half_life_days: float = 30.0
+
     # Secrets
     craftsman_secret_key: str = ""
 

@@ -3,6 +3,7 @@ import { api } from "@/lib/api";
 import { CampaignActions } from "@/components/campaigns/CampaignActions";
 import { CampaignBuilder } from "@/components/campaigns/CampaignBuilder";
 import { DryRunPanel } from "@/components/campaigns/DryRunPanel";
+import { SignalRules } from "@/components/campaigns/SignalRules";
 import { ApiDown } from "@/components/ui/ApiDown";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -80,6 +81,7 @@ export default async function CampaignDetailPage({
         <CampaignBuilder
           campaign={{ ...campaign, steps: campaign.steps ?? [] }}
         />
+        <SignalRules campaignId={campaign.id} />
       </div>
     </>
   );

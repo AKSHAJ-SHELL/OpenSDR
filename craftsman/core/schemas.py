@@ -38,19 +38,6 @@ class ReplyClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
-class LeadEnrichment(BaseModel):
-    """Common output shape for enrichment adapters (Apollo, Hunter, ...)."""
-
-    email: EmailStr | None = None
-    first_name: str | None = None
-    last_name: str | None = None
-    title: str | None = None
-    linkedin_url: str | None = None
-    company_name: str | None = None
-    company_domain: str | None = None
-    company_description: str | None = None
-
-
 # ---------------------------------------------------------------- API schemas
 
 
@@ -60,6 +47,8 @@ class LeadOut(BaseModel):
     first_name: str | None
     last_name: str | None
     title: str | None
+    seniority: str | None = None  # enrichment-fillable (M2.1)
+    phone: str | None = None  # enrichment-fillable (M2.1)
     status: str
     icp_score: float | None
     email_verified: bool
@@ -68,10 +57,23 @@ class LeadOut(BaseModel):
     # scored — the UI says so instead of fabricating a breakdown.
     icp_cosine: float | None = None
     icp_rule: float | None = None
+    icp_signal: float | None = None  # M2.3: NULL = no signals (2-way blend was used)
     icp_scored_at: datetime | None = None
     icp_scored_campaign_id: uuid.UUID | None = None
     icp_scored_campaign_name: str | None = None
     icp_matched_keyword: str | None = None  # derived from title at read time
+
+    model_config = {"from_attributes": True}
+
+
+class LeadEnrichmentOut(BaseModel):
+    """One provenance row: which provider said what about a lead, and when (M2.1)."""
+
+    field: str
+    value: str
+    source: str
+    confidence: float
+    fetched_at: datetime
 
     model_config = {"from_attributes": True}
 
@@ -343,6 +345,103 @@ class ImportResult(BaseModel):
     deduped: int
     suppressed: int
     errors: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------- lead sourcing (M2.2)
+
+
+class SourceFilters(BaseModel):
+    """Structured ICP filters. Each provider maps what it supports; unknown filters are
+    passed through honestly (no silent drop) where the provider accepts free text."""
+
+    titles: list[str] = Field(default_factory=list)
+    seniorities: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    company_domains: list[str] = Field(default_factory=list)
+    employee_ranges: list[str] = Field(default_factory=list)  # e.g. "51,200"
+
+
+class SourceSearchRequest(BaseModel):
+    provider: str
+    icp_query: str = ""
+    filters: SourceFilters = Field(default_factory=SourceFilters)
+    limit: int = Field(default=25, ge=1, le=50)  # capped to bound provider spend
+
+
+class SourcedLeadIn(BaseModel):
+    """A candidate row a client sends back to import. Re-checked by the gate — the
+    client is untrusted, so preview labels are not load-bearing for safety."""
+
+    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+    title: str | None = None
+    company_name: str | None = None
+    company_domain: str | None = None
+    linkedin_url: str | None = None
+
+
+class SourcedCandidate(SourcedLeadIn):
+    status: str  # new | duplicate | suppressed | invalid (from the gate, read-only)
+
+
+class SourcedPreview(BaseModel):
+    provider: str
+    candidates: list[SourcedCandidate]
+    new: int
+    duplicate: int
+    suppressed: int
+    invalid: int
+
+
+class SourceImportRequest(BaseModel):
+    source: str  # provider name, stamped onto imported leads
+    leads: list[SourcedLeadIn] = Field(max_length=50)
+
+
+# ---------------------------------------------------------------- intent signals (M2.3)
+
+SignalType = Literal["funding", "leadership_hire", "job_posting", "tech_stack_change"]
+SignalAction = Literal["boost_score", "enroll", "notify"]
+
+
+class SignalOut(BaseModel):
+    id: uuid.UUID
+    company_id: uuid.UUID
+    type: str
+    payload: dict | None
+    observed_at: datetime
+    source: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class SignalRuleCreate(BaseModel):
+    signal_type: SignalType
+    action: SignalAction
+    active: bool = True
+
+
+class SignalRuleOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    signal_type: str
+    action: str
+    active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class ScoringWeights(BaseModel):
+    """The active ICP-score weights, so the dashboard explains a score truthfully instead
+    of hardcoding numbers that a knob change would falsify (M2.3)."""
+
+    cosine: float
+    rule: float
+    signal_cosine: float
+    signal_rule: float
+    signal: float
 
 
 # ---------------------------------------------------------------- API keys

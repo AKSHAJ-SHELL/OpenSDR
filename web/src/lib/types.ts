@@ -14,16 +14,28 @@ export type Lead = {
   first_name: string | null;
   last_name: string | null;
   title: string | null;
+  seniority: string | null;
+  phone: string | null;
   status: string;
   icp_score: number | null;
   email_verified: boolean;
   source: string | null;
   icp_cosine: number | null;
   icp_rule: number | null;
+  icp_signal: number | null;
   icp_scored_at: string | null;
   icp_scored_campaign_id: string | null;
   icp_scored_campaign_name: string | null;
   icp_matched_keyword: string | null;
+};
+
+/** One provenance row: which provider said what about a lead, and when (M2.1). */
+export type LeadEnrichment = {
+  field: string;
+  value: string;
+  source: string;
+  confidence: number;
+  fetched_at: string;
 };
 
 export type ImportResult = {
@@ -31,6 +43,73 @@ export type ImportResult = {
   deduped: number;
   suppressed: number;
   errors: string[];
+};
+
+/** Active ICP-score weights (M2.3) so the score popover explains truthfully. */
+export type ScoringWeights = {
+  cosine: number;
+  rule: number;
+  signal_cosine: number;
+  signal_rule: number;
+  signal: number;
+};
+
+/** Intent signal observation behind a lead's score boost (M2.3). */
+export type LeadSignal = {
+  id: string;
+  company_id: string;
+  type: string;
+  payload: Record<string, unknown> | null;
+  observed_at: string;
+  source: string | null;
+};
+
+export type SignalRule = {
+  id: string;
+  campaign_id: string;
+  signal_type: string;
+  action: string;
+  active: boolean;
+};
+
+/** Lead sourcing (M2.2): find leads via a BYO-key provider, gate them, import selected. */
+export type SourceFilters = {
+  titles: string[];
+  seniorities: string[];
+  industries: string[];
+  locations: string[];
+  company_domains: string[];
+  employee_ranges: string[];
+};
+
+export type SourceSearchRequest = {
+  provider: string;
+  icp_query: string;
+  filters: SourceFilters;
+  limit: number;
+};
+
+export type SourcedLeadIn = {
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  title: string | null;
+  company_name: string | null;
+  company_domain: string | null;
+  linkedin_url: string | null;
+};
+
+export type SourcedCandidate = SourcedLeadIn & {
+  status: "new" | "duplicate" | "suppressed" | "invalid";
+};
+
+export type SourcedPreview = {
+  provider: string;
+  candidates: SourcedCandidate[];
+  new: number;
+  duplicate: number;
+  suppressed: number;
+  invalid: number;
 };
 
 export type InboxMessage = {

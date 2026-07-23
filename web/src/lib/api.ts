@@ -9,10 +9,17 @@ import type {
   ImportResult,
   InboxMessage,
   Lead,
+  LeadEnrichment,
+  LeadSignal,
+  ScoringWeights,
+  SignalRule,
   Mailbox,
   Overview,
   ReviewAction,
   ReviewItem,
+  SourcedLeadIn,
+  SourcedPreview,
+  SourceSearchRequest,
   Step,
   VariantDetail,
   VariantUpdate,
@@ -103,6 +110,18 @@ export const api = {
     return get<Lead[]>(qs ? `/leads?${qs}` : "/leads");
   },
   importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
+  leadEnrichments: (id: string) => get<LeadEnrichment[]>(`/leads/${id}/enrichments`),
+  scoringWeights: () => get<ScoringWeights>("/leads/scoring-weights"),
+  leadSignals: (id: string) => get<LeadSignal[]>(`/leads/${id}/signals`),
+  signalRules: (campaignId: string) => get<SignalRule[]>(`/campaigns/${campaignId}/signal-rules`),
+  createSignalRule: (campaignId: string, body: { signal_type: string; action: string }) =>
+    post<SignalRule>(`/campaigns/${campaignId}/signal-rules`, body),
+  deleteSignalRule: (campaignId: string, ruleId: string) =>
+    del<void>(`/campaigns/${campaignId}/signal-rules/${ruleId}`),
+  sourceProviders: () => get<string[]>("/leads/source/providers"),
+  sourceLeads: (body: SourceSearchRequest) => post<SourcedPreview>("/leads/source", body),
+  importSourced: (source: string, leads: SourcedLeadIn[]) =>
+    post<ImportResult>("/leads/source/import", { source, leads }),
   suppressLead: (id: string) => post<void>(`/leads/${id}/suppress`),
   eraseLead: (id: string) => del<void>(`/leads/${id}/erase`),
   reviewAction: (itemId: string, action: ReviewAction) =>

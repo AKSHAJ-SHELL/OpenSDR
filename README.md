@@ -58,7 +58,7 @@ The dashboard renders the Beta PDFs converging live (`Bandit` page, with an inte
 
 FastAPI + Postgres/pgvector + Celery/Redis. One `docker compose up` brings up the API, workers, beat scheduler, Next.js dashboard (`web/`), and a [Mailpit](https://mailpit.axllent.org/) sandbox for testing without touching real inboxes.
 
-Pipeline per lead: ingest → verify email → embed + ICP-score → research (cached 30d per company) → enroll → per step: bandit picks variant → copywriter fills slots → validator gates → send engine dispatches in-window → inbox poller catches the reply → classifier updates state → bandit posterior updates → human notified if interested.
+Pipeline per lead: ingest → verify email → enrich (optional, BYO provider keys) → embed + ICP-score → research (cached 30d per company) → enroll → per step: bandit picks variant → copywriter fills slots → validator gates → send engine dispatches in-window → inbox poller catches the reply → classifier updates state → bandit posterior updates → human notified if interested.
 
 Key modules:
 
@@ -144,6 +144,51 @@ row (needs `operate`); **Erase** is the irreversible GDPR delete and needs `admi
 which the dashboard key deliberately lacks by default, so the button explains the 403
 instead of failing silently. Erase from an admin key, or widen the dashboard key's scope
 only if you accept the blast radius.
+
+**Enrichment (bring your own keys).** After a lead verifies, an optional provider chain
+(Apollo, Hunter — your accounts, your keys) fills what your CSV left blank: title,
+seniority, phone, LinkedIn, company industry/size/description. Set
+`ENRICHMENT_PROVIDERS=apollo,hunter` (precedence order) plus the matching
+`APOLLO_API_KEY`/`HUNTER_API_KEY`; leave it unset and the pipeline is verify-only. Two
+promises: a dead provider never blocks verification, and a provider value never
+overwrites data you supplied — every provider answer is recorded per-field in a
+provenance table (who said what, when, at what confidence; click a lead's **Source** in
+the dashboard to see it), but your CSV wins where it already had an answer. There is no
+proprietary contact database here and we don't pretend otherwise: results come from
+*your* provider accounts and are labeled with their source.
+
+**Find leads (bring your own keys).** *Craftsman → **Find leads*** searches your own
+provider account for people matching an ICP query + filters (titles, seniorities,
+industries, locations, employee ranges) and previews each candidate against the **same
+import gate a CSV faces** — syntax, dedupe, suppression — labeling every row `new` /
+`duplicate` / `suppressed` / `no usable email` before you import a thing. Set
+`LEAD_SOURCE_PROVIDERS=apollo,webhook` plus the matching `APOLLO_API_KEY` /
+`LEAD_SOURCE_WEBHOOK_URL`; unset means the page shows a configure-me state, never fake
+data. Sourced leads get **zero shortcuts**: the gate re-runs on import (a hand-forged
+request can't smuggle a suppressed address in), and they land as `status="new"`, queued
+for the same verify → enrich pipeline. Two honesty notes on the Apollo connector: people
+whose email is **credit-locked** (Apollo returns a valid-looking placeholder) are
+**dropped, not imported and not faked** — we never silently spend your unlock credits;
+and the webhook source only fetches **https** URLs through the same SSRF guard the
+research fetcher uses. Respect each provider's terms and credit model.
+
+**Intent signals (bring your own sources).** Craftsman can prioritize by *intent* — funding,
+hiring, tech-stack moves — not just static fit. Optional, independently-disableable
+collectors watch your own sources (`SIGNAL_COLLECTORS=homepage_diff,careers_diff,rss_funding`
++ `SIGNAL_FUNDING_RSS_URL`): careers/homepage **diffing** through the same SSRF guard, and an
+RSS/news **funding** watch. Each observation attaches to a company and feeds a **decaying**
+signal component of the ICP score (`SIGNAL_HALF_LIFE_DAYS`, default 30 — a fresh funding
+round counts full, a month-old one counts half). The scoring is honest about the switch:
+a lead whose company has **no** signals is scored exactly as before (`0.7·cosine +
+0.3·rule`); only leads *with* signals use the 3-way blend (`0.6·cosine + 0.25·rule +
+0.15·signal`). So configuring signals never silently re-ranks the leads you already have —
+it only adds lift where intent actually exists. Per-campaign **signal rules** (on the
+campaign page) decide what a signal *does*: `boost_score`, `notify` (Slack), or `enroll`.
+`enroll` is deliberate autonomy and is **off until you create the rule** — and even then
+it's guarded (verified + above-threshold + not-already-enrolled) and lands the lead in
+`queued`, so research and the anti-hallucination validator **still run** on every
+auto-enrolled lead. Nothing is skipped. Collectors read *your* watched sources — there's
+no proprietary intent database — so respect each source's robots/ToS and feed terms.
 
 **Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
 *blocked copy* (the validator rejected both generation attempts, so the enrollment is

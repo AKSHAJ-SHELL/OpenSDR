@@ -9,7 +9,15 @@ from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.copywriter.fill import KNOWN_SKELETON_SLOTS, LLM_SLOTS, skeleton_slots
 from craftsman.core.config import get_settings
-from craftsman.core.models import Campaign, DryRun, Enrollment, Lead, SequenceStep, Variant
+from craftsman.core.models import (
+    Campaign,
+    DryRun,
+    Enrollment,
+    Lead,
+    SequenceStep,
+    SignalRule,
+    Variant,
+)
 from craftsman.core.schemas import (
     ArmPosterior,
     CampaignCreate,
@@ -19,6 +27,8 @@ from craftsman.core.schemas import (
     DryRunItemOut,
     DryRunOut,
     DryRunRequest,
+    SignalRuleCreate,
+    SignalRuleOut,
     StepCreate,
     StepOut,
     StepUpdate,
@@ -316,6 +326,8 @@ async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
         await embedder.embed([campaign.icp_description])
     )[0]
 
+    from craftsman.scoring.rules import company_signal_boost
+
     leads = db.scalars(
         select(Lead).where(Lead.email_verified.is_(True), Lead.status == "verified")
     ).all()
@@ -325,12 +337,15 @@ async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
         company = lead.company
         text = lead_text(lead.title, company.name if company else None, None)
         lead_emb = (await embedder.embed([text]))[0]
-        breakdown = score_breakdown(lead_emb, icp_emb, lead.title)
+        # None ⇒ company has no signals ⇒ 2-way blend (unchanged); value ⇒ 3-way (M2.3)
+        boost = company_signal_boost(db, lead.company_id, scored_at, settings.signal_half_life_days)
+        breakdown = score_breakdown(lead_emb, icp_emb, lead.title, boost)
         score = breakdown.score
         lead.icp_score = score
         # provenance: which ICP produced this, and from what parts
         lead.icp_cosine = breakdown.cosine
         lead.icp_rule = breakdown.rule
+        lead.icp_signal = breakdown.signal  # None when no signals
         lead.icp_scored_campaign_id = campaign.id
         lead.icp_scored_at = scored_at
         if score < settings.icp_threshold:
@@ -372,6 +387,68 @@ def pause(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     campaign.status = "paused"
     db.add(campaign)
     return campaign
+
+
+# ---------------------------------------------------------------- signal rules (M2.3)
+
+
+@router.get(
+    "/{campaign_id}/signal-rules",
+    response_model=list[SignalRuleOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def list_signal_rules(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    return db.scalars(
+        select(SignalRule).where(SignalRule.campaign_id == campaign_id)
+    ).all()
+
+
+@router.post(
+    "/{campaign_id}/signal-rules",
+    response_model=SignalRuleOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def create_signal_rule(
+    campaign_id: uuid.UUID, body: SignalRuleCreate, db: Session = Depends(get_db)
+):
+    """Wire a signal to an action for this campaign. `enroll` is deliberate autonomy:
+    creating it means a matching signal may auto-enroll verified, above-threshold leads
+    (into `queued` — research/validation still run). Off until you create it."""
+    if db.get(Campaign, campaign_id) is None:
+        raise HTTPException(404, "campaign not found")
+    existing = db.scalar(
+        select(SignalRule).where(
+            SignalRule.campaign_id == campaign_id,
+            SignalRule.signal_type == body.signal_type,
+            SignalRule.action == body.action,
+        )
+    )
+    if existing is not None:
+        raise HTTPException(409, "rule already exists for this signal_type + action")
+    rule = SignalRule(
+        campaign_id=campaign_id,
+        signal_type=body.signal_type,
+        action=body.action,
+        active=body.active,
+    )
+    db.add(rule)
+    db.flush()
+    return rule
+
+
+@router.delete(
+    "/{campaign_id}/signal-rules/{rule_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def delete_signal_rule(
+    campaign_id: uuid.UUID, rule_id: uuid.UUID, db: Session = Depends(get_db)
+):
+    rule = db.get(SignalRule, rule_id)
+    if rule is None or rule.campaign_id != campaign_id:
+        raise HTTPException(404, "signal rule not found")
+    db.delete(rule)
 
 
 @router.post(

@@ -131,6 +131,22 @@ async def _safe_get(client: httpx.AsyncClient, url: str) -> httpx.Response | Non
     return None
 
 
+async def fetch_url_body(url: str, timeout: float = 15.0) -> str | None:
+    """SSRF-guarded single-page fetch → raw response text (uncleaned). Raises `UnsafeURL`
+    if the *initial* URL is unsafe, so callers/tests observe the rejection; redirect hops
+    are re-validated inside `_safe_get` and yield None if unsafe. Returns None on
+    non-200/failure. Used by the M2.3 signal collectors (diff + RSS)."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, validate_url, url)  # raises UnsafeURL on the seed URL
+    async with httpx.AsyncClient(
+        headers={"User-Agent": USER_AGENT}, follow_redirects=False, timeout=timeout
+    ) as client:
+        resp = await _safe_get(client, url)
+    if resp is None or resp.status_code != 200:
+        return None
+    return resp.text
+
+
 async def fetch_company_text(domain: str) -> dict[str, str]:
     """Return {url: cleaned_text} for the homepage + about pages that resolve.
 
