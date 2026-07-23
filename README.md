@@ -172,6 +172,24 @@ whose email is **credit-locked** (Apollo returns a valid-looking placeholder) ar
 and the webhook source only fetches **https** URLs through the same SSRF guard the
 research fetcher uses. Respect each provider's terms and credit model.
 
+**Intent signals (bring your own sources).** Craftsman can prioritize by *intent* — funding,
+hiring, tech-stack moves — not just static fit. Optional, independently-disableable
+collectors watch your own sources (`SIGNAL_COLLECTORS=homepage_diff,careers_diff,rss_funding`
++ `SIGNAL_FUNDING_RSS_URL`): careers/homepage **diffing** through the same SSRF guard, and an
+RSS/news **funding** watch. Each observation attaches to a company and feeds a **decaying**
+signal component of the ICP score (`SIGNAL_HALF_LIFE_DAYS`, default 30 — a fresh funding
+round counts full, a month-old one counts half). The scoring is honest about the switch:
+a lead whose company has **no** signals is scored exactly as before (`0.7·cosine +
+0.3·rule`); only leads *with* signals use the 3-way blend (`0.6·cosine + 0.25·rule +
+0.15·signal`). So configuring signals never silently re-ranks the leads you already have —
+it only adds lift where intent actually exists. Per-campaign **signal rules** (on the
+campaign page) decide what a signal *does*: `boost_score`, `notify` (Slack), or `enroll`.
+`enroll` is deliberate autonomy and is **off until you create the rule** — and even then
+it's guarded (verified + above-threshold + not-already-enrolled) and lands the lead in
+`queued`, so research and the anti-hallucination validator **still run** on every
+auto-enrolled lead. Nothing is skipped. Collectors read *your* watched sources — there's
+no proprietary intent database — so respect each source's robots/ToS and feed terms.
+
 **Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
 *blocked copy* (the validator rejected both generation attempts, so the enrollment is
 stuck — you get the validator's errors, the rejected slot text, and Retry / Skip step /

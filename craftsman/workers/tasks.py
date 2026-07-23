@@ -396,6 +396,61 @@ def enrich_lead(lead_id: str):
             log.warning("enrichment for lead %s failed (verify kept): %s", lead_id, e)
 
 
+# ------------------------------------------------------------------ signals
+
+
+@app.task
+def collect_signals():
+    """Run enabled intent collectors, persist new signals, and fire matching signal_rules
+    (boost/notify/enroll). Disabled by default — a no-op unless SIGNAL_COLLECTORS is set."""
+    from craftsman.core.config import get_settings
+    from craftsman.core.models import Signal
+    from craftsman.scoring.collectors import build_collectors
+    from craftsman.scoring.rules import evaluate_rules
+
+    settings = get_settings()
+    collectors = build_collectors(settings)
+    if not collectors:
+        return 0
+
+    notify = _slack_notifier(settings)
+    total = 0
+    with session_scope() as db:
+        for collector in collectors:
+            try:
+                collected = _run(collector.collect(db))
+            except Exception as e:  # noqa: BLE001 — one collector never sinks the sweep
+                log.warning("collector %s failed: %s", getattr(collector, "name", "?"), e)
+                continue
+            for cs in collected:
+                signal = Signal(
+                    company_id=cs.company_id, type=cs.type, payload=cs.payload, source=cs.source
+                )
+                db.add(signal)
+                db.flush()
+                evaluate_rules(db, signal, settings.icp_threshold, notify=notify)
+                total += 1
+    log.info("collect_signals recorded %d new signals", total)
+    return total
+
+
+def _slack_notifier(settings):
+    """Return a callable(text) that posts to Slack, or None if no webhook is configured."""
+    url = settings.slack_webhook_url
+    if not url:
+        return None
+
+    def _notify(text: str):
+        try:
+            import httpx
+
+            httpx.post(url, json={"text": text}, timeout=5)
+        except Exception as e:  # noqa: BLE001
+            log.warning("slack notify failed: %s", e)
+
+    return _notify
+
+
 # ------------------------------------------------------------------ inbox
 
 

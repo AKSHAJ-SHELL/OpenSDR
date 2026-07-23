@@ -1,17 +1,23 @@
 "use client";
 
 import { useState } from "react";
-import type { Lead } from "@/lib/types";
+import type { Lead, ScoringWeights } from "@/lib/types";
 
-const COSINE_WEIGHT = 0.7;
-const RULE_WEIGHT = 0.3;
+const FALLBACK_WEIGHTS: ScoringWeights = {
+  cosine: 0.7,
+  rule: 0.3,
+  signal_cosine: 0.6,
+  signal_rule: 0.25,
+  signal: 0.15,
+};
 
 /**
- * ICP score with a breakdown popover. The components come from the server
- * (leads.icp_cosine / icp_rule, recorded at scoring time) — never re-derived here,
- * so the explanation stays truthful if the weights change.
+ * ICP score with a breakdown popover. The components (icp_cosine / icp_rule / icp_signal)
+ * and the active weights both come from the server — never re-derived here, so the
+ * explanation stays truthful if the weights change (M2.3). A lead with icp_signal set was
+ * scored on the 3-way (signal) blend; otherwise the 2-way blend.
  */
-export function ScoreCell({ lead }: { lead: Lead }) {
+export function ScoreCell({ lead, weights }: { lead: Lead; weights?: ScoringWeights }) {
   const [open, setOpen] = useState(false);
   const score = lead.icp_score;
 
@@ -19,6 +25,10 @@ export function ScoreCell({ lead }: { lead: Lead }) {
     return <span className="text-xs text-faint">not scored</span>;
   }
 
+  const w = weights ?? FALLBACK_WEIGHTS;
+  const hasSignal = lead.icp_signal != null;
+  const cosineWeight = hasSignal ? w.signal_cosine : w.cosine;
+  const ruleWeight = hasSignal ? w.signal_rule : w.rule;
   const pct = Math.round(Math.min(1, Math.max(0, score)) * 100);
   const hasBreakdown = lead.icp_cosine != null && lead.icp_rule != null;
 
@@ -46,7 +56,7 @@ export function ScoreCell({ lead }: { lead: Lead }) {
                   <tr>
                     <td className="py-0.5">Similarity to ICP text</td>
                     <td className="text-right tabular-nums text-ink">
-                      {lead.icp_cosine!.toFixed(2)} × {COSINE_WEIGHT}
+                      {lead.icp_cosine!.toFixed(2)} × {cosineWeight}
                     </td>
                   </tr>
                   <tr>
@@ -59,9 +69,20 @@ export function ScoreCell({ lead }: { lead: Lead }) {
                       )}
                     </td>
                     <td className="text-right tabular-nums text-ink">
-                      {lead.icp_rule!.toFixed(2)} × {RULE_WEIGHT}
+                      {lead.icp_rule!.toFixed(2)} × {ruleWeight}
                     </td>
                   </tr>
+                  {hasSignal ? (
+                    <tr>
+                      <td className="py-0.5">
+                        Intent signal
+                        <span className="text-faint"> (decaying)</span>
+                      </td>
+                      <td className="text-right tabular-nums text-ink">
+                        {lead.icp_signal!.toFixed(2)} × {w.signal}
+                      </td>
+                    </tr>
+                  ) : null}
                   <tr className="border-t border-line">
                     <td className="pt-1 font-semibold text-ink">Total</td>
                     <td className="pt-1 text-right font-semibold tabular-nums text-ink">

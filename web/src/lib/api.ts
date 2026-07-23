@@ -10,6 +10,9 @@ import type {
   InboxMessage,
   Lead,
   LeadEnrichment,
+  LeadSignal,
+  ScoringWeights,
+  SignalRule,
   Mailbox,
   Overview,
   ReviewAction,
@@ -108,6 +111,13 @@ export const api = {
   },
   importLeads: (file: File) => upload<ImportResult>("/leads/import", file),
   leadEnrichments: (id: string) => get<LeadEnrichment[]>(`/leads/${id}/enrichments`),
+  scoringWeights: () => get<ScoringWeights>("/leads/scoring-weights"),
+  leadSignals: (id: string) => get<LeadSignal[]>(`/leads/${id}/signals`),
+  signalRules: (campaignId: string) => get<SignalRule[]>(`/campaigns/${campaignId}/signal-rules`),
+  createSignalRule: (campaignId: string, body: { signal_type: string; action: string }) =>
+    post<SignalRule>(`/campaigns/${campaignId}/signal-rules`, body),
+  deleteSignalRule: (campaignId: string, ruleId: string) =>
+    del<void>(`/campaigns/${campaignId}/signal-rules/${ruleId}`),
   sourceProviders: () => get<string[]>("/leads/source/providers"),
   sourceLeads: (body: SourceSearchRequest) => post<SourcedPreview>("/leads/source", body),
   importSourced: (source: string, leads: SourcedLeadIn[]) =>

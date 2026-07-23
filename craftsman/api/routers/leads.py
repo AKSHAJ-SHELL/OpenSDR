@@ -8,11 +8,13 @@ from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
 from craftsman.compliance.suppression import erase_lead, suppress
 from craftsman.core.config import get_settings
-from craftsman.core.models import Campaign, Lead, LeadEnrichmentRecord
+from craftsman.core.models import Campaign, Lead, LeadEnrichmentRecord, Signal
 from craftsman.core.schemas import (
     ImportResult,
     LeadEnrichmentOut,
     LeadOut,
+    ScoringWeights,
+    SignalOut,
     SourcedCandidate,
     SourcedPreview,
     SourceImportRequest,
@@ -169,6 +171,41 @@ def list_leads(
         item.icp_matched_keyword = matched_seniority_keyword(lead.title)
         out.append(item)
     return out
+
+
+@router.get(
+    "/scoring-weights", response_model=ScoringWeights, dependencies=[Depends(require_scope("read"))]
+)
+def scoring_weights():
+    """Active ICP-score weights so the dashboard explains a score truthfully — no-signal
+    leads use cosine/rule; signal leads use the 3-way split (M2.3)."""
+    s = get_settings()
+    return ScoringWeights(
+        cosine=s.icp_cosine_weight,
+        rule=s.icp_rule_weight,
+        signal_cosine=s.icp_signal_cosine_weight,
+        signal_rule=s.icp_signal_rule_weight,
+        signal=s.icp_signal_weight,
+    )
+
+
+@router.get(
+    "/{lead_id}/signals",
+    response_model=list[SignalOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def list_lead_signals(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Intent signals for the lead's company — the observations behind its signal boost."""
+    lead = db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(404, "lead not found")
+    if lead.company_id is None:
+        return []
+    return db.scalars(
+        select(Signal)
+        .where(Signal.company_id == lead.company_id)
+        .order_by(Signal.observed_at.desc())
+    ).all()
 
 
 @router.get(

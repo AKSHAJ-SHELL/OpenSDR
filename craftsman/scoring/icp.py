@@ -1,7 +1,14 @@
-"""ICP scoring: 0.7 * cosine_sim(lead, icp) + 0.3 * rule_score.
+"""ICP scoring.
 
-Leads under the threshold are disqualified and never touch the LLM —
-cost control and spam control in one.
+- No signals (company has none): 2-way blend  `w_cos·cosine + w_rule·rule`  (0.7/0.3).
+- With signals (M2.3): 3-way blend  `w_cos_s·cosine + w_rule_s·rule + w_sig·signal_boost`
+  (0.6/0.25/0.15).
+
+Choosing the blend by *whether signals exist* (a `signal_boost` of `None` selects the
+2-way path) means an operator with no signals sees byte-identical scores to before — the
+⛔ Gate M2 'renormalized' decision. Weights are config knobs (changing a default is a ⛔
+human decision per TESTING.md §0). Leads under the threshold are disqualified and never
+touch the LLM — cost and spam control in one.
 """
 
 import math
@@ -38,19 +45,17 @@ def lead_text(title: str | None, company_name: str | None, company_description: 
     return f"{title or 'Unknown title'} at {company_name or 'unknown company'}: {company_description or ''}"
 
 
-COSINE_WEIGHT = 0.7
-RULE_WEIGHT = 0.3
-
-
 @dataclass(frozen=True)
 class ScoreBreakdown:
     """The parts that produced a score, so the dashboard can explain it without
-    re-deriving anything. Persisted alongside the score (M1.3)."""
+    re-deriving anything. Persisted alongside the score (M1.3; `signal` added M2.3).
+    `signal` is None when the company had no signals (2-way blend was used)."""
 
     score: float
     cosine: float  # sim01, already mapped to [0,1]
     rule: float
     matched_keyword: str | None
+    signal: float | None = None
 
 
 def matched_seniority_keyword(title: str | None) -> str | None:
@@ -66,18 +71,45 @@ def matched_seniority_keyword(title: str | None) -> str | None:
 
 
 def score_breakdown(
-    lead_embedding: list[float], icp_embedding: list[float], title: str | None
+    lead_embedding: list[float],
+    icp_embedding: list[float],
+    title: str | None,
+    signal_boost: float | None = None,
 ) -> ScoreBreakdown:
+    """`signal_boost=None` ⇒ the company had no signals ⇒ 2-way blend (unchanged from
+    pre-M2.3). Any value (even 0.0) ⇒ the company had signals ⇒ 3-way blend."""
+    from craftsman.core.config import get_settings
+
+    s = get_settings()
     sim = cosine_sim(lead_embedding, icp_embedding)
     sim01 = (sim + 1.0) / 2.0  # map [-1,1] → [0,1]
     rule = rule_score(title)
+
+    if signal_boost is None:
+        score = s.icp_cosine_weight * sim01 + s.icp_rule_weight * rule
+        signal_component = None
+    else:
+        boost = max(0.0, min(1.0, signal_boost))
+        score = (
+            s.icp_signal_cosine_weight * sim01
+            + s.icp_signal_rule_weight * rule
+            + s.icp_signal_weight * boost
+        )
+        signal_component = round(boost, 4)
+
     return ScoreBreakdown(
-        score=round(COSINE_WEIGHT * sim01 + RULE_WEIGHT * rule, 4),
+        score=round(score, 4),
         cosine=round(sim01, 4),
         rule=round(rule, 4),
         matched_keyword=matched_seniority_keyword(title),
+        signal=signal_component,
     )
 
 
-def icp_score(lead_embedding: list[float], icp_embedding: list[float], title: str | None) -> float:
-    return score_breakdown(lead_embedding, icp_embedding, title).score
+def icp_score(
+    lead_embedding: list[float],
+    icp_embedding: list[float],
+    title: str | None,
+    signal_boost: float | None = None,
+) -> float:
+    return score_breakdown(lead_embedding, icp_embedding, title, signal_boost).score

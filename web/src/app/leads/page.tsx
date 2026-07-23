@@ -23,11 +23,15 @@ export default async function LeadsPage({
   const scoreGte = score_gte ? Number(score_gte) : undefined;
 
   let leads;
+  let weights;
   try {
-    leads = await api.leads({
-      status: status && status !== "all" ? status : undefined,
-      score_gte: Number.isFinite(scoreGte) ? scoreGte : undefined,
-    });
+    [leads, weights] = await Promise.all([
+      api.leads({
+        status: status && status !== "all" ? status : undefined,
+        score_gte: Number.isFinite(scoreGte) ? scoreGte : undefined,
+      }),
+      api.scoringWeights().catch(() => undefined),
+    ]);
   } catch (e) {
     return (
       <>
@@ -81,7 +85,7 @@ export default async function LeadsPage({
                       </td>
                       <td className="px-5 py-3.5 text-muted">{lead.title || "—"}</td>
                       <td className="px-5 py-3.5">
-                        <ScoreCell lead={lead} />
+                        <ScoreCell lead={lead} weights={weights} />
                       </td>
                       <td className="px-5 py-3.5">
                         <SourceCell lead={lead} />

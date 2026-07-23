@@ -22,6 +22,7 @@ export type Lead = {
   source: string | null;
   icp_cosine: number | null;
   icp_rule: number | null;
+  icp_signal: number | null;
   icp_scored_at: string | null;
   icp_scored_campaign_id: string | null;
   icp_scored_campaign_name: string | null;
@@ -42,6 +43,33 @@ export type ImportResult = {
   deduped: number;
   suppressed: number;
   errors: string[];
+};
+
+/** Active ICP-score weights (M2.3) so the score popover explains truthfully. */
+export type ScoringWeights = {
+  cosine: number;
+  rule: number;
+  signal_cosine: number;
+  signal_rule: number;
+  signal: number;
+};
+
+/** Intent signal observation behind a lead's score boost (M2.3). */
+export type LeadSignal = {
+  id: string;
+  company_id: string;
+  type: string;
+  payload: Record<string, unknown> | null;
+  observed_at: string;
+  source: string | null;
+};
+
+export type SignalRule = {
+  id: string;
+  campaign_id: string;
+  signal_type: string;
+  action: string;
+  active: boolean;
 };
 
 /** Lead sourcing (M2.2): find leads via a BYO-key provider, gate them, import selected. */

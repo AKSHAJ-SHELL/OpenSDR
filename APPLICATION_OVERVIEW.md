@@ -58,6 +58,7 @@ flowchart TB
         POLL["poll_inboxes (120s)"]
         SETTLE["settle_bandit (3600s)"]
         RESET["reset_daily_counters (24h)"]
+        COLLECT["collect_signals (24h, M2.3)"]
     end
 
     subgraph core [Domain logic  craftsman/]
@@ -149,6 +150,9 @@ path (used by tests and the seed scripts). *(M0.2)*
 | **companies** | `domain` (unique), `name`, `industry`/`size`/`description` (enrichment-fillable, M2.1), `research_brief` (JSONB), `research_fetched_at`, `embedding` Vector(1024) | Research cached here, 30d TTL |
 | **leads** | `email` (unique), `company_id` FK, name/title/linkedin + `seniority`/`phone` (enrichment-fillable, M2.1), `timezone` (default `America/Los_Angeles`), `email_verified`, `icp_score` + provenance (`icp_cosine`, `icp_rule`, `icp_scored_campaign_id` FK, `icp_scored_at`), `status` (new/verified/disqualified/suppressed), `source` | The canonical PII row. Score is per-*last-activation*: provenance records which campaign and when (M1.3, `migrations/0006`) |
 | **lead_enrichments** | `lead_id` FK (no cascade — M0.4 doctrine), `field`, `value`, `source`, `confidence`, `fetched_at` | Append-only enrichment provenance (M2.1, `migrations/0008`): who said what, even when the CSV value won. PII — deleted by `erase_lead` |
+| **signals** | `company_id` FK, `type` (funding/leadership_hire/job_posting/tech_stack_change), `payload` JSONB, `observed_at`, `source` | Company-level intent observations (M2.3, `migrations/0009`). NOT person PII → untouched by erasure. Feeds the decaying signal score component |
+| **signal_rules** | `campaign_id` FK, `signal_type`, `action` (boost_score/enroll/notify), `active` | Per-campaign policy (M2.3). `enroll` is the only autonomy-bearing action; off until an operator creates it |
+| **collector_state** | `company_id` FK, `collector`, `fingerprint`, `updated_at` | Per-company diff baseline so collectors detect *change* / dedupe feed entries (M2.3) |
 | **campaigns** | `name`, `icp_description`, `value_prop`, `sender_persona` (JSONB), `daily_cap` (50), `status` (draft/active/paused/done), `icp_embedding` Vector(1024) | |
 | **sequence_steps** | `campaign_id` FK, `step_order` (1=opener,2=bump,3=breakup), `wait_days` (3); unique(campaign,step_order) | Drip structure |
 | **variants** | `step_id` FK, `name` (pain_led/trigger_led/question_led), `skeleton`, `slot_schema` (JSONB), `alpha`/`beta` (Beta prior 1/1), `active` | **Each variant = a bandit arm** |
@@ -227,9 +231,21 @@ research brief (`ResearchBrief`), the copy slots (`SlotFill`), and the reply lab
 ### 6.3 Scoring (`craftsman/scoring/`)
 - `embeddings.py` — pluggable embedder; default `hash` (deterministic, offline), optional Voyage API.
   Dim 1024.
-- `icp.py` — final score = `0.7*cosine_similarity(lead/company vs ICP) + 0.3*rule_score`, where
+- `icp.py` — two-mode blend (M2.3). No-signal leads: `0.7·cosine + 0.3·rule_score` (unchanged).
+  Leads whose company has ≥1 signal: `0.6·cosine + 0.25·rule + 0.15·signal_boost`. The `None`
+  signal sentinel selects the 2-way path, so configuring signals never changes the score of a
+  lead that has none (the ⛔ Gate M2 'renormalized' decision). Weights are config knobs.
   rule_score is seniority-keyword weighted (VP/Head/Director…), unknown title → 0.3 neutral.
   `icp_threshold=0.55` gates enrollment at activate time.
+- `signals.py` — pure decay math: `signal_boost = clamp(Σ type_weight·0.5^(age/half_life), 0, 1)`.
+- `collectors.py` — SSRF-guarded intent collectors (M2.3), each optional via `SIGNAL_COLLECTORS`:
+  `HomepageDiffCollector`→tech_stack_change, `CareersDiffCollector`→job_posting (both diff a
+  page fingerprint vs `collector_state`), `RssFundingCollector`→funding (RSS watch, deduped by
+  link). Failure-isolated per company.
+- `rules.py` — `company_signal_boost` (scoring read side) + `evaluate_rules` (write side:
+  boost_score/notify/enroll). `enroll` auto-enrolls verified + above-threshold +
+  not-already-enrolled leads into `queued` — identical to activate, never skipping research or
+  validation.
 
 ### 6.4 Copywriter (`craftsman/copywriter/fill.py`)
 - Skeleton has 4 LLM-filled slots (`subject_hook`, `personalization_sentence`, `value_prop_bridge`,
@@ -330,6 +346,9 @@ single highest-severity gap for enterprise use.
 | POST | `/leads/import` | CSV import → leads + enqueue verify | ✅ |
 | GET | `/leads` | list leads (`score_gte`, `status`, `limit`); returns score provenance + matched keyword | |
 | GET | `/leads/{id}/enrichments` | enrichment provenance rows: field/value/source/confidence/fetched_at (M2.1) | |
+| GET | `/leads/scoring-weights` | active ICP-score weights, so the score popover explains truthfully (M2.3) | |
+| GET | `/leads/{id}/signals` | intent signals for the lead's company (M2.3) | |
+| GET/POST/DELETE | `/campaigns/{id}/signal-rules` … | manage per-campaign signal rules (M2.3); POST/DELETE operate-scoped | ✅ |
 | GET | `/leads/source/providers` | configured (enabled + keyed) lead sources (M2.2) | |
 | POST | `/leads/source` | search a provider → **preview** candidates gate-labeled new/dup/suppressed/invalid; no writes (M2.2) | |
 | POST | `/leads/source/import` | persist selected candidates through the shared gate (re-checked server-side) + enqueue enrich (M2.2) | ✅ |
@@ -403,6 +422,11 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `LLM_PROVIDER` | anthropic (mock in tests) | config |
 | `anthropic_model` | `claude-sonnet-4-6` | config |
 | `icp_threshold` | 0.55 | config |
+| ICP weights — no signals | `icp_cosine_weight` 0.7 / `icp_rule_weight` 0.3 | config |
+| ICP weights — with signals ⛔ | `icp_signal_cosine_weight` 0.6 / `icp_signal_rule_weight` 0.25 / `icp_signal_weight` 0.15 | config (M2.3; default set at ⛔ Gate M2 — 'renormalized': no-signal leads keep 0.7/0.3) |
+| `signal_half_life_days` | 30 | config |
+| `signal_collectors` / `signal_funding_rss_url` | "" (collection disabled) | config |
+| Signal type weights | funding 1.0 / leadership_hire 0.8 / job_posting 0.6 / tech_stack_change 0.5 | `scoring/signals.py` |
 | Send window | 9:00–16:30 lead-local, ±20min jitter | config |
 | `classifier_confidence_threshold` | 0.7 | config |
 | `bandit_deactivate_min_trials` | 30 | config |

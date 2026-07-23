@@ -57,6 +57,7 @@ class LeadOut(BaseModel):
     # scored — the UI says so instead of fabricating a breakdown.
     icp_cosine: float | None = None
     icp_rule: float | None = None
+    icp_signal: float | None = None  # M2.3: NULL = no signals (2-way blend was used)
     icp_scored_at: datetime | None = None
     icp_scored_campaign_id: uuid.UUID | None = None
     icp_scored_campaign_name: str | None = None
@@ -397,6 +398,50 @@ class SourcedPreview(BaseModel):
 class SourceImportRequest(BaseModel):
     source: str  # provider name, stamped onto imported leads
     leads: list[SourcedLeadIn] = Field(max_length=50)
+
+
+# ---------------------------------------------------------------- intent signals (M2.3)
+
+SignalType = Literal["funding", "leadership_hire", "job_posting", "tech_stack_change"]
+SignalAction = Literal["boost_score", "enroll", "notify"]
+
+
+class SignalOut(BaseModel):
+    id: uuid.UUID
+    company_id: uuid.UUID
+    type: str
+    payload: dict | None
+    observed_at: datetime
+    source: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class SignalRuleCreate(BaseModel):
+    signal_type: SignalType
+    action: SignalAction
+    active: bool = True
+
+
+class SignalRuleOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    signal_type: str
+    action: str
+    active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class ScoringWeights(BaseModel):
+    """The active ICP-score weights, so the dashboard explains a score truthfully instead
+    of hardcoding numbers that a knob change would falsify (M2.3)."""
+
+    cosine: float
+    rule: float
+    signal_cosine: float
+    signal_rule: float
+    signal: float
 
 
 # ---------------------------------------------------------------- API keys

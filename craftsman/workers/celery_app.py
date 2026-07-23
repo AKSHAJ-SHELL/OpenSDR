@@ -58,6 +58,7 @@ app.conf.update(
         "craftsman.workers.tasks.settle_bandit": {"queue": "settle"},
         "craftsman.workers.tasks.redrive_unsent": {"queue": "settle"},
         "craftsman.workers.tasks.sequencer_tick": {"queue": "send"},
+        "craftsman.workers.tasks.collect_signals": {"queue": "research"},
     },
     beat_schedule={
         "sequencer-tick": {"task": "craftsman.workers.tasks.sequencer_tick", "schedule": 60.0},
@@ -66,6 +67,11 @@ app.conf.update(
         "redrive-unsent": {"task": "craftsman.workers.tasks.redrive_unsent", "schedule": 600.0},
         "reset-daily-counters": {
             "task": "craftsman.workers.tasks.reset_daily_counters",
+            "schedule": 86400.0,
+        },
+        # Intent-signal sweep (M2.3). Daily; a no-op unless SIGNAL_COLLECTORS is set.
+        "collect-signals": {
+            "task": "craftsman.workers.tasks.collect_signals",
             "schedule": 86400.0,
         },
     },

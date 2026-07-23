@@ -66,6 +66,9 @@ class Lead(Base):
     # bare score is meaningless without knowing which ICP produced it and from what parts.
     icp_cosine: Mapped[float | None] = mapped_column(Float)
     icp_rule: Mapped[float | None] = mapped_column(Float)
+    # Signal component (M2.3): NULL means the company had no signals at scoring time, so
+    # the 2-way (cosine/rule) blend was used; a value means the 3-way blend was used.
+    icp_signal: Mapped[float | None] = mapped_column(Float)
     icp_scored_campaign_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("campaigns.id"))
     icp_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(Text, default="new")  # new|verified|disqualified|suppressed
@@ -99,6 +102,61 @@ class LeadEnrichmentRecord(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
+
+
+class Signal(Base):
+    """An intent observation about a company (M2.3): funding, hiring, tech-stack moves.
+    Company-level, not person PII — so erasure of a lead does not touch these. Feeds a
+    decaying signal component of the ICP score and can trigger signal_rules."""
+
+    __tablename__ = "signals"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    company_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("companies.id"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(Text, nullable=False)  # funding|leadership_hire|job_posting|tech_stack_change
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    source: Mapped[str | None] = mapped_column(Text)  # collector name / feed url
+
+    __table_args__ = (Index("ix_signals_company_type_observed", "company_id", "type", "observed_at"),)
+
+
+class SignalRule(Base):
+    """Per-campaign policy: when a signal_type is observed, do `action`. `enroll` is the
+    only autonomy-bearing action and fires only where an operator created the rule (M2.3)."""
+
+    __tablename__ = "signal_rules"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("campaigns.id"), nullable=False)
+    signal_type: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)  # boost_score|enroll|notify
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "signal_type", "action", name="uq_signal_rule"),
+    )
+
+
+class CollectorState(Base):
+    """Per-company, per-collector fingerprint so diff-based collectors detect *change*
+    (careers/homepage) and dedupe feed entries (funding) without re-emitting (M2.3)."""
+
+    __tablename__ = "collector_state"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    collector: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (UniqueConstraint("company_id", "collector", name="uq_collector_state"),)
 
 
 class Campaign(Base):
