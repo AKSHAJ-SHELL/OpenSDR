@@ -54,6 +54,7 @@ app.conf.update(
         "craftsman.workers.tasks.research_enrollment": {"queue": "research"},
         "craftsman.workers.tasks.run_dry_run": {"queue": "research"},
         "craftsman.workers.tasks.generate_and_send": {"queue": "send"},
+        "craftsman.workers.tasks.generate_touch_task": {"queue": "send"},
         "craftsman.workers.tasks.poll_inboxes": {"queue": "inbox"},
         "craftsman.workers.tasks.settle_bandit": {"queue": "settle"},
         "craftsman.workers.tasks.redrive_unsent": {"queue": "settle"},

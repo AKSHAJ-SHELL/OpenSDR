@@ -104,11 +104,19 @@ def apply_classification(
 
     # --- state machine
     if enrollment is not None:
+        was_awaiting_touch = enrollment.state == "awaiting_human_touch"
         event = LABEL_TO_EVENT[label]
         try:
             apply_event(db, enrollment, event, detail={"label": label})
         except InvalidTransition as e:
             log.warning("classification transition skipped: %s", e)
+        # M3.1: a reply/bounce/unsub that moved the enrollment out of
+        # awaiting_human_touch orphans its open task — cancel it so nobody performs
+        # a touch on a lead who already answered (or must not be contacted).
+        if was_awaiting_touch and enrollment.state != "awaiting_human_touch":
+            from craftsman.sequencer.touch import cancel_open_tasks
+
+            cancel_open_tasks(db, enrollment.id, reason=f"reply:{label}")
         if label == "ooo" and classification.ooo_return_date:
             enrollment.next_action_at = datetime.combine(
                 classification.ooo_return_date, time(17, 0), tzinfo=timezone.utc

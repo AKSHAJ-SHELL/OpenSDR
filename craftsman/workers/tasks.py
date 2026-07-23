@@ -40,6 +40,7 @@ def sequencer_tick():
             db,
             enqueue_research=lambda eid: research_enrollment.delay(eid),
             enqueue_send=lambda eid: generate_and_send.delay(eid),
+            enqueue_task=lambda eid: generate_touch_task.delay(eid),
         )
     log.info("tick handled %d enrollments", handled)
     return handled
@@ -119,6 +120,16 @@ def generate_and_send(self, enrollment_id: str):
                 SequenceStep.step_order == step_order,
             )
         )
+        # Channel guard (M3.1): email is the only channel this task may ever act on.
+        # A mis-enqueued task step must not produce an email — re-route it to the
+        # task generator, never send.
+        if step is not None and step.channel != "email":
+            log.warning(
+                "generate_and_send re-routing %s step %s (enrollment %s) to task queue",
+                step.channel, step_order, enrollment_id,
+            )
+            generate_touch_task.delay(enrollment_id)
+            return
         variants = list(
             db.scalars(select(Variant).where(Variant.step_id == step.id, Variant.active)).all()
         )
@@ -238,6 +249,143 @@ def generate_and_send(self, enrollment_id: str):
         enrollment.current_step = step_order  # record which step was actually sent
         apply_event(db, enrollment, Event.SEND_OK, detail={"step": step_order})
         schedule_next_step(db, enrollment, wait_days, lead.timezone)
+
+
+# ------------------------------------------------------------------ touch tasks (M3)
+
+
+@app.task(bind=True, max_retries=3)
+def generate_touch_task(self, enrollment_id: str):
+    """Assisted-channel step: generate validated content and queue it for a human.
+
+    Mirrors generate_and_send's policies exactly — suppression re-check, uniform
+    variant pick (no posterior updates: completion ≠ reply), validate-twice-then-
+    review-queue, idempotency claim — but the output is a TouchTask, never an email.
+    Nothing here touches SMTP, mailbox counters, campaign caps, or the bandit.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from craftsman.bandit.thompson import Arm, pick_arm
+    from craftsman.channels import get_channel
+    from craftsman.compliance.suppression import is_suppressed
+    from craftsman.copywriter.task_fill import generate_call_brief, generate_linkedin_copy
+    from craftsman.core.config import get_settings
+    from craftsman.core.logging import bind_log_context
+    from craftsman.core.models import ReviewQueueItem, TouchTask
+    from craftsman.sequencer.machine import Event
+    from craftsman.sequencer.scheduling import add_business_days
+    from craftsman.sequencer.tick import apply_event
+
+    with session_scope() as db:
+        enrollment = db.get(Enrollment, enrollment_id)
+        if enrollment is None or enrollment.state != "ready":
+            return
+        lead = db.get(Lead, enrollment.lead_id)
+        campaign = enrollment.campaign
+        company = db.get(Company, lead.company_id)
+        bind_log_context(enrollment_id=str(enrollment.id), lead_id=str(lead.id))
+
+        # generation-time suppression re-check — do-not-contact gates every channel
+        if is_suppressed(db, lead.email):
+            apply_event(db, enrollment, Event.UNSUBSCRIBE, detail={"at": "task_generation"})
+            return
+
+        step_order = max(enrollment.current_step, 1)
+        step = db.scalar(
+            select(SequenceStep).where(
+                SequenceStep.campaign_id == campaign.id,
+                SequenceStep.step_order == step_order,
+            )
+        )
+        if step is None or not get_channel(step.channel).assisted:
+            log.error(
+                "generate_touch_task refused step %s (channel %s) for enrollment %s",
+                step_order, step.channel if step else "?", enrollment_id,
+            )
+            return
+
+        brief = ResearchBrief.model_validate(company.research_brief or {})
+        variant = None
+        if step.channel == "linkedin_task":
+            variants = list(
+                db.scalars(
+                    select(Variant).where(Variant.step_id == step.id, Variant.active)
+                ).all()
+            )
+            if not variants:
+                enrollment.state = "error"
+                db.add(enrollment)
+                db.add(ReviewQueueItem(
+                    kind="copywriter",
+                    enrollment_id=enrollment.id,
+                    payload={"errors": ["no active variants on linkedin step"], "channel": step.channel},
+                ))
+                return
+            # uniform rotation: priors never update for task channels (M3.3 decision),
+            # so Thompson sampling over Beta(1,1) is an unbiased coin — reused for
+            # consistency and the day M6 revisits reward semantics
+            arms = [Arm(id=str(v.id), alpha=v.alpha, beta=v.beta) for v in variants]
+            chosen = pick_arm(arms)
+            variant = next(v for v in variants if str(v.id) == chosen.id)
+            copy = _run(generate_linkedin_copy(
+                llm=get_llm(),
+                brief=brief,
+                skeleton=variant.skeleton,
+                value_prop=campaign.value_prop,
+                persona=campaign.sender_persona or {},
+                first_name=lead.first_name or "",
+            ))
+        else:  # call_task
+            copy = _run(generate_call_brief(
+                llm=get_llm(),
+                brief=brief,
+                value_prop=campaign.value_prop,
+                persona=campaign.sender_persona or {},
+            ))
+
+        if not copy.ok:
+            enrollment.state = "error"
+            db.add(enrollment)
+            db.add(ReviewQueueItem(
+                kind="copywriter",
+                enrollment_id=enrollment.id,
+                payload={
+                    "errors": copy.validation.errors if copy.validation else [],
+                    "slots": copy.slots,
+                    "channel": step.channel,
+                },
+            ))
+            log.warning("task copywriter rejected twice for %s (%s)", lead.email, step.channel)
+            return
+
+        now = datetime.now(timezone.utc)
+        due = add_business_days(now, get_settings().touch_task_due_days)
+        task_row = TouchTask(
+            enrollment_id=enrollment.id,
+            step_order=step_order,
+            channel=step.channel,
+            variant_id=variant.id if variant else None,
+            payload=copy.payload,
+            status="open",
+            due_at=due,
+        )
+        db.add(task_row)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()  # this step already has a task from a prior attempt
+            log.info("duplicate task suppressed: enrollment %s step %s", enrollment_id, step_order)
+            return
+
+        enrollment.current_step = step_order
+        apply_event(
+            db, enrollment, Event.TASK_CREATED,
+            detail={"channel": step.channel, "task_id": str(task_row.id), "due_at": due.isoformat()},
+        )
+        # Gate M3 default: an undone task holds the sequence (next_action_at stays
+        # NULL). Only skip_on_expire steps arm the tick to expire-and-advance.
+        enrollment.next_action_at = due if step.skip_on_expire else None
+        db.add(enrollment)
 
 
 # ------------------------------------------------------------------ dry run (M1.2)

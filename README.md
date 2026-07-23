@@ -53,6 +53,7 @@ The dashboard renders the Beta PDFs converging live (`Bandit` page, with an inte
 - **Auto-reply to an interested human.** Interested replies stop the sequence and ping Slack. A human takes over. This is a feature, not a gap — it's also exactly where AI SDRs get caught.
 - **Send to unverified emails.** Syntax → MX → optional SMTP handshake; unverifiable addresses never enroll. Bounce risk is the #1 deliverability killer.
 - **Batch-blast.** Sends land inside the lead's local business hours (9:00–16:30, jittered), one per mailbox per 45–90s, with warmup ramps and per-campaign caps.
+- **Automate LinkedIn.** Bot-driven LinkedIn outreach violates LinkedIn's terms and gets accounts restricted; the products that do it anyway are gambling with *your* account. Craftsman's LinkedIn and call steps are **assisted**: it writes the message, validates every claim, and queues a task — a human clicks send. No browser automation, no session cookies, ever. Email is the only autonomous channel.
 
 ## Architecture
 
@@ -189,6 +190,27 @@ it's guarded (verified + above-threshold + not-already-enrolled) and lands the l
 `queued`, so research and the anti-hallucination validator **still run** on every
 auto-enrolled lead. Nothing is skipped. Collectors read *your* watched sources — there's
 no proprietary intent database — so respect each source's robots/ToS and feed terms.
+
+**Multi-channel sequences (assisted by design).** Sequence steps have a channel:
+`email` (autonomous, exactly as before — existing campaigns are untouched),
+`linkedin_task`, or `call_task`. Task steps don't send anything. Instead the pipeline
+runs as usual (research → fill → **the same validator**) and queues the result on the
+dashboard's **Tasks** page for a human: LinkedIn steps produce a connection-note-sized
+message (≤ 280 chars rendered, every claim grounded in the research brief) with a copy
+button and a deep link to the profile; call steps produce a structured **call brief** —
+opener, up to two pain hypotheses drawn from the brief, objection notes — deliberately
+*not* a script, plus a `tel:` link (or optional BYO-Twilio click-to-dial that rings
+**your** phone first, then connects the lead — Craftsman never robocalls a prospect).
+Completing or skipping the task advances the sequence through the normal state machine;
+an undone task **holds** the sequence and shows as overdue (per-step opt-in
+`skip_on_expire` advances it after the due window instead, `TOUCH_TASK_DUE_DAYS`,
+default 3 business days). Replies, bounces, and unsubscribes still route normally while
+a task is open — an open task is cancelled the moment the lead answers or opts out, so
+you never touch someone who already replied. Task completions are recorded in the
+per-lead **timeline** (click any lead), not in the bandit: a completed touch is not a
+reply, so it never moves copy posteriors. And to say it once more for the people
+shopping for a growth hack: **there is no LinkedIn automation here and there never will
+be** — that is a feature of the honest version, not a missing one.
 
 **Review** (dashboard → **Review**) is where the agent hands off. Two things wait here:
 *blocked copy* (the validator rejected both generation attempts, so the enrollment is

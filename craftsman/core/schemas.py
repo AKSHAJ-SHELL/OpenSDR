@@ -32,6 +32,26 @@ class SlotFill(BaseModel):
     cta_question: str
 
 
+class LinkedInSlotFill(BaseModel):
+    """LinkedIn copywriter output (M3.2): only the slots, never a whole message.
+    Rendered through a skeleton and the same four-gate validator with channel caps
+    (note ≤ LINKEDIN_NOTE_MAX_CHARS after render)."""
+
+    personalization_hook: str
+    value_bridge: str
+    cta_question: str
+
+
+class CallBrief(BaseModel):
+    """Call-task output (M3.3): a grounded, structured brief — deliberately NOT a
+    script. Every field passes grounding + banned-phrase checks; word caps per field
+    are config knobs (⛔ Gate M3 approved defaults 25/20/40)."""
+
+    opener: str
+    pain_hypotheses: list[str] = Field(min_length=1, max_length=2)
+    objection_notes: str
+
+
 class ReplyClassification(BaseModel):
     label: Literal["interested", "objection", "not_now", "ooo", "unsubscribe", "bounce_or_auto"]
     ooo_return_date: date | None = None
@@ -157,10 +177,15 @@ class VariantDetailOut(VariantOut):
     trials: int
 
 
+ChannelName = Literal["email", "linkedin_task", "call_task"]
+
+
 class StepOut(BaseModel):
     id: uuid.UUID
     step_order: int
     wait_days: int
+    channel: str = "email"
+    skip_on_expire: bool = False
     variants: list[VariantDetailOut]
 
     model_config = {"from_attributes": True}
@@ -168,10 +193,17 @@ class StepOut(BaseModel):
 
 class StepCreate(BaseModel):
     wait_days: int = Field(ge=0)
+    channel: ChannelName = "email"
+    skip_on_expire: bool = False
 
 
 class StepUpdate(BaseModel):
-    wait_days: int = Field(ge=0)
+    wait_days: int | None = Field(default=None, ge=0)
+    channel: ChannelName | None = Field(
+        default=None,
+        description="Frozen once the campaign has enrollments (enrollments index by step).",
+    )
+    skip_on_expire: bool | None = None
 
 
 class CampaignDetailOut(CampaignOut):
@@ -442,6 +474,63 @@ class ScoringWeights(BaseModel):
     signal_cosine: float
     signal_rule: float
     signal: float
+
+
+# ---------------------------------------------------------------- touch tasks (M3)
+
+
+class TaskOut(BaseModel):
+    """A human-touch task with enough context to act on it without leaving the card:
+    who, why (brief highlights), the validated content, and where to do it."""
+
+    id: uuid.UUID
+    enrollment_id: uuid.UUID
+    channel: str
+    step_order: int
+    status: str
+    outcome: str | None
+    payload: dict
+    due_at: datetime
+    overdue: bool = False
+    created_at: datetime | None
+    resolved_at: datetime | None
+    # lead + campaign context
+    lead_id: uuid.UUID | None = None
+    lead_email: str | None = None
+    lead_name: str | None = None
+    lead_title: str | None = None
+    linkedin_url: str | None = None
+    phone: str | None = None
+    company_name: str | None = None
+    company_domain: str | None = None
+    campaign_id: uuid.UUID | None = None
+    campaign_name: str | None = None
+    # grounded research highlights (trigger events + pain points from the brief)
+    brief_highlights: list[str] = Field(default_factory=list)
+    # call_task only: true when a Twilio dialer is fully configured (M3.3)
+    dialer_available: bool = False
+
+
+class TaskCompleteRequest(BaseModel):
+    outcome: str | None = Field(
+        default=None,
+        description="Channel-specific: linkedin_task = sent; call_task = connected|voicemail|no_answer.",
+    )
+
+
+class TimelineItemOut(BaseModel):
+    """One entry in the unified per-lead touch history (M3.1): email sends, replies,
+    and human-touch task events, newest first."""
+
+    kind: str  # email_sent | reply | task
+    at: datetime
+    channel: str = "email"
+    title: str
+    detail: str | None = None
+    classification: str | None = None
+    status: str | None = None
+    outcome: str | None = None
+    campaign_name: str | None = None
 
 
 # ---------------------------------------------------------------- API keys

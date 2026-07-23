@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Suspense } from "react";
 import { api } from "@/lib/api";
 import { LeadActions } from "@/components/leads/LeadActions";
@@ -80,8 +81,12 @@ export default async function LeadsPage({
                       className="border-b border-line last:border-0 transition-colors hover:bg-bg/80"
                     >
                       <td className="px-5 py-3.5">
-                        <div className="font-semibold text-ink">{name || lead.email}</div>
-                        <div className="text-xs text-muted">{lead.email}</div>
+                        <Link href={`/leads/${lead.id}`} className="group block">
+                          <div className="font-semibold text-ink underline-offset-2 group-hover:underline">
+                            {name || lead.email}
+                          </div>
+                          <div className="text-xs text-muted">{lead.email}</div>
+                        </Link>
                       </td>
                       <td className="px-5 py-3.5 text-muted">{lead.title || "—"}</td>
                       <td className="px-5 py-3.5">
