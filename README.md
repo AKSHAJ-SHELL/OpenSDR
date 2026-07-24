@@ -4,7 +4,7 @@
 
 **An open-source AI SDR with a learning loop the funded versions don't have.**
 
-Craftsman runs end-to-end outbound: leads in → researched, personalized sequences out → replies classified → human handoff the moment someone is interested. It never free-writes an email, never auto-replies to a human, and it gets measurably better with every send via a Thompson-sampling bandit over copy variants.
+Craftsman runs end-to-end outbound: leads in → researched, personalized sequences out → replies classified → a validated reply draft waiting for your click, and human handoff the moment someone is interested. It never free-writes an email, never auto-replies unless you enable **Guarded Autopilot** — whose replies are template-constrained, validated, and policy-escalated — and it gets measurably better with every send via a Thompson-sampling bandit over copy variants.
 
 ```
 docker compose up
@@ -50,7 +50,7 @@ The dashboard renders the Beta PDFs converging live (`Bandit` page, with an inte
 
 ## What it will never do
 
-- **Auto-reply to an interested human.** Interested replies stop the sequence and ping Slack. A human takes over. This is a feature, not a gap — it's also exactly where AI SDRs get caught.
+- **Auto-reply to a human — unless you explicitly enable Guarded Autopilot.** By default (Copilot, M4.1): interested replies stop the sequence, ping Slack, and a validated draft waits in the inbox; **a human click is the only path to dispatch**. Guarded Autopilot (M4.4) is opt-in per campaign, requires an admin-scoped API call, and may auto-send **only** template-constrained, validator-passed replies for three deterministic intents (interested → your scheduling link, "send me info" → your approved one-pager, timing objection → a follow-up offer) at classifier confidence ≥ 0.9, inside business hours, with no escalation-rule match — and **at most one auto-reply per thread, ever** (a reply to the auto-reply always escalates; that limit is hardcoded, not a knob). Everything else — pricing, competitor, hostile, legal, ambiguous — goes to a human. A free-text AI reply remains impossible by construction. Kill switch: `POST /campaigns/{id}/autopilot/disable`, instant.
 - **Send to unverified emails.** Syntax → MX → optional SMTP handshake; unverifiable addresses never enroll. Bounce risk is the #1 deliverability killer.
 - **Batch-blast.** Sends land inside the lead's local business hours (9:00–16:30, jittered), one per mailbox per 45–90s, with warmup ramps and per-campaign caps.
 - **Automate LinkedIn.** Bot-driven LinkedIn outreach violates LinkedIn's terms and gets accounts restricted; the products that do it anyway are gambling with *your* account. Craftsman's LinkedIn and call steps are **assisted**: it writes the message, validates every claim, and queues a task — a human clicks send. No browser automation, no session cookies, ever. Email is the only autonomous channel.

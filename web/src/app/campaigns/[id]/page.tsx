@@ -4,6 +4,7 @@ import { CampaignActions } from "@/components/campaigns/CampaignActions";
 import { CampaignBuilder } from "@/components/campaigns/CampaignBuilder";
 import { DryRunPanel } from "@/components/campaigns/DryRunPanel";
 import { SignalRules } from "@/components/campaigns/SignalRules";
+import { AutopilotPanel } from "@/components/campaigns/AutopilotPanel";
 import { ApiDown } from "@/components/ui/ApiDown";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -80,6 +81,12 @@ export default async function CampaignDetailPage({
         />
         <CampaignBuilder
           campaign={{ ...campaign, steps: campaign.steps ?? [] }}
+        />
+        <AutopilotPanel
+          campaignId={campaign.id}
+          enabled={campaign.autopilot_enabled ?? false}
+          schedulingUrl={campaign.scheduling_url}
+          infoDocUrl={campaign.info_doc_url}
         />
         <SignalRules campaignId={campaign.id} />
       </div>

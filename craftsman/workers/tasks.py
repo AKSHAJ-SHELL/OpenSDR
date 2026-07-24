@@ -476,6 +476,12 @@ def generate_reply_draft(self, inbound_message_id: str):
             claim.body = copy.body
             claim.status = "pending"
             claim.detail = {"attempts": copy.attempts}
+            db.add(claim)
+            # M4.4: Guarded Autopilot may dispatch this one draft — same validator,
+            # same send engine, policy-gated. Any refusal leaves the pending draft
+            # for a human (Copilot behavior is the fallback, always).
+            _maybe_autopilot_send(db, claim, inbound, enrollment, campaign, lead)
+            return
         elif copy.skipped_reason:
             claim.status = "skipped"
             claim.resolved_at = now
@@ -498,6 +504,74 @@ def generate_reply_draft(self, inbound_message_id: str):
             ))
             log.warning("reply copywriter rejected twice for %s", lead.email)
         db.add(claim)
+
+
+def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
+    """Evaluate the Autopilot policy for a fresh pending draft; dispatch iff every
+    gate passes. Never raises — a refused or failed auto-send leaves the pending
+    draft exactly where Copilot would have left it."""
+    from craftsman.core.config import get_settings
+    from craftsman.core.models import AuditLog
+    from craftsman.inbox.autopilot import AutopilotContext, decide, prior_auto_replies
+    from craftsman.inbox.escalation import evaluate, load_rules
+    from craftsman.sender.reply import send_reply_draft
+    from craftsman.sender.smtp import SendBlocked
+
+    settings = get_settings()
+    rules = load_rules(db, campaign.id, settings.classifier_confidence_threshold)
+    escalation = evaluate(
+        rules,
+        label=inbound.classification or "",
+        confidence=inbound.classification_confidence or 0.0,
+        reply_text=inbound.body or "",
+    )
+    ctx = AutopilotContext(
+        autopilot_enabled=campaign.autopilot_enabled,
+        skeleton_key=draft.skeleton_key,
+        classification_confidence=inbound.classification_confidence,
+        escalation_blocks=escalation.block_autopilot,
+        prior_auto_replies_in_thread=prior_auto_replies(db, enrollment.id),
+        scheduling_url=campaign.scheduling_url,
+        info_doc_url=campaign.info_doc_url,
+        now_utc=datetime.now(timezone.utc),
+        lead_tz=lead.timezone,
+    )
+    decision = decide(ctx)
+    if not decision.send:
+        if campaign.autopilot_enabled:
+            # the operator opted in — record WHY this one stayed with a human
+            log.info("autopilot declined draft %s: %s", draft.id, decision.reason)
+            db.add(AuditLog(
+                enrollment_id=enrollment.id,
+                event="autopilot_declined",
+                detail={"draft_id": str(draft.id), "reason": decision.reason},
+            ))
+        return
+
+    db.commit()  # pending status durable before the dispatch CAS reads the row
+    try:
+        _run(send_reply_draft(db, draft, auto=True))
+        db.add(AuditLog(
+            enrollment_id=enrollment.id,
+            event="autopilot_send",
+            detail={
+                "draft_id": str(draft.id),
+                "skeleton": draft.skeleton_key,
+                "confidence": inbound.classification_confidence,
+            },
+        ))
+        log.info("autopilot dispatched draft %s (%s)", draft.id, draft.skeleton_key)
+    except SendBlocked as e:
+        # rate limit / capacity → draft is back in pending for a human; suppression
+        # → discarded. Either way the policy result is honest and audited.
+        log.warning("autopilot send blocked (%s) for draft %s", e.reason, draft.id)
+        db.add(AuditLog(
+            enrollment_id=enrollment.id,
+            event="autopilot_declined",
+            detail={"draft_id": str(draft.id), "reason": f"send_blocked:{e.reason}"},
+        ))
+    except Exception as e:  # never fail the generation task over an auto-send
+        log.warning("autopilot send failed for draft %s: %s", draft.id, e)
 
 
 def _reply_scheduling_line(campaign: Campaign) -> str:

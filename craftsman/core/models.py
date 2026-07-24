@@ -180,6 +180,11 @@ class Campaign(Base):
     # one-pager for "send me info" replies. Empty = the corresponding line is omitted.
     scheduling_url: Mapped[str | None] = mapped_column(Text)
     info_doc_url: Mapped[str | None] = mapped_column(Text)
+    # M4.4 (⛔ Gate M4 Option B): opt-in Guarded Autopilot. Enable requires an
+    # admin-scoped call; the operate-scoped kill switch disables instantly.
+    autopilot_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     steps: Mapped[list["SequenceStep"]] = relationship(
         back_populates="campaign", order_by="SequenceStep.step_order"

@@ -486,6 +486,9 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Escalation rules | defaults always active (legal/GDPR tripwire: suppress + urgent notify + never a draft; confident interested → Slack ping); DB rules ADD via union — no rule can shadow the tripwire | `inbox/escalation.py`; `/campaigns/{id}/escalation-rules` (M4.2) |
 | `CALCOM_WEBHOOK_SECRET` / `CALCOM_API_KEY` | "" (meeting webhooks off — 503; scheduling links in drafts work regardless). Webhook is HMAC-SHA256-gated, the one deliberate unauthenticated route besides /health and /u/{token} | config; `meetings/providers.py`, `/meetings/webhooks/calcom` (M4.3) |
 | Campaign booking links | `campaigns.scheduling_url` (interested drafts) / `info_doc_url` ("send me info" drafts) — static lines, never LLM output; empty = line omitted | migration `0013`; campaign builder (M4.3) |
+| `autopilot_min_confidence` ⛔ | 0.9 — below this Guarded Autopilot never fires | config (⛔ Gate M4 Option B) |
+| Autopilot enable/disable | per-campaign `autopilot_enabled` (default false, migration `0014`); enable = **admin** scope (deliberate friction), disable = operate (instant kill switch); both audit-logged | `/campaigns/{id}/autopilot/*` (M4.4) |
+| Autopilot invariants (not knobs) | ≤ 1 auto-reply per thread ever (reply-to-auto-reply always escalates); only the 3 deterministic skeletons; validator gates apply unchanged; escalation `block_autopilot` vetoes; lead-local business hours | `inbox/autopilot.py` — `MAX_AUTO_REPLIES_PER_THREAD` is a constant |
 
 ---
 

@@ -157,6 +157,7 @@ class CampaignOut(BaseModel):
     value_prop: str | None = None
     scheduling_url: str | None = None
     info_doc_url: str | None = None
+    autopilot_enabled: bool = False
 
     model_config = {"from_attributes": True}
 

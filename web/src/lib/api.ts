@@ -168,6 +168,10 @@ export const api = {
   pause: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/pause`),
   reclassify: (msgId: string, label: string) =>
     post<InboxMessage>(`/inbox/${msgId}/reclassify`, { label }),
+  enableAutopilot: (id: string) =>
+    post<{ autopilot_enabled: boolean }>(`/campaigns/${id}/autopilot/enable`),
+  disableAutopilot: (id: string) =>
+    post<{ autopilot_enabled: boolean }>(`/campaigns/${id}/autopilot/disable`),
   drafts: (status: string = "all") =>
     get<ReplyDraft[]>(`/inbox/drafts?status=${encodeURIComponent(status)}`),
   sendDraft: (id: string, body?: string) =>

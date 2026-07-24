@@ -158,6 +158,7 @@ export type Campaign = {
   value_prop?: string | null;
   scheduling_url?: string | null;
   info_doc_url?: string | null;
+  autopilot_enabled?: boolean;
 };
 
 export type SenderPersona = {

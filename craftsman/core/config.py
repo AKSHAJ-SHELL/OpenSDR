@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     calcom_api_key: str = ""
     calcom_webhook_secret: str = ""
 
+    # Guarded Autopilot (M4.4, ⛔ Gate M4 Option B). Per-campaign flag lives in the
+    # DB (admin-scoped enable). ⛔ Below this confidence Autopilot never fires.
+    # The ≤1-auto-reply-per-thread invariant is HARDCODED in inbox/autopilot.py,
+    # deliberately not a knob.
+    autopilot_min_confidence: float = 0.9
+
     # Optional Twilio click-to-dial (M3.3) — BYO account; disabled unless all four are
     # set. Rings the operator first, then dials the lead (no robocalls to prospects).
     twilio_account_sid: str = ""

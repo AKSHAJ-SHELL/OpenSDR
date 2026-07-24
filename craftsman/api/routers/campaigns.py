@@ -698,3 +698,43 @@ def delete_escalation_rule(
     if rule is None or rule.campaign_id != campaign_id:
         raise HTTPException(404, "escalation rule not found")
     db.delete(rule)
+
+
+# ---------------------------------------------------------------- guarded autopilot (M4.4)
+
+
+@router.post(
+    "/{campaign_id}/autopilot/enable",
+    dependencies=[Depends(require_scope("admin"))],
+)
+def enable_autopilot(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """⛔ Gate M4 Option B. ADMIN-scoped by design — deliberate friction: the
+    dashboard's read+operate key cannot flip this; a human with the admin key must.
+    What it enables: auto-send of validated, template-constrained drafts for the
+    three deterministic intents only, confidence ≥ AUTOPILOT_MIN_CONFIDENCE, no
+    escalation match, business hours, ≤ 1 auto-reply per thread ever."""
+    from craftsman.core.models import AuditLog
+
+    campaign = _get_campaign_or_404(db, campaign_id)
+    campaign.autopilot_enabled = True
+    db.add(campaign)
+    db.add(AuditLog(event="autopilot_enabled", detail={"campaign_id": str(campaign_id)}))
+    db.flush()
+    return {"autopilot_enabled": True}
+
+
+@router.post(
+    "/{campaign_id}/autopilot/disable",
+    dependencies=[Depends(require_scope("operate"))],
+)
+def disable_autopilot(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """The kill switch — OPERATE-scoped (easier to stop than to start), instant:
+    the flag is read fresh at every policy evaluation."""
+    from craftsman.core.models import AuditLog
+
+    campaign = _get_campaign_or_404(db, campaign_id)
+    campaign.autopilot_enabled = False
+    db.add(campaign)
+    db.add(AuditLog(event="autopilot_disabled", detail={"campaign_id": str(campaign_id)}))
+    db.flush()
+    return {"autopilot_enabled": False}
