@@ -83,6 +83,38 @@ def run_presend_checks(db: Session, lead: Lead, campaign: Campaign) -> Mailbox:
     return mailbox
 
 
+def reserve_org_slot(db: Session, org_id) -> bool:
+    """Atomically claim one send against the org's daily cap (M5.1c).
+
+    Same conditional-UPDATE pattern as the campaign slot; NULL cap = unlimited
+    (the self-hoster default) and always reserves. Applies to cold sends only —
+    replies to engaged humans are bounded by mailbox limits instead, mirroring
+    the campaign-cap doctrine in sender/reply.py."""
+    from sqlalchemy import or_
+
+    from craftsman.core.models import Org
+
+    result = db.execute(
+        update(Org)
+        .where(
+            Org.id == org_id,
+            or_(Org.daily_send_cap.is_(None), Org.sent_today < Org.daily_send_cap),
+        )
+        .values(sent_today=Org.sent_today + 1)
+    )
+    return result.rowcount == 1
+
+
+def release_org_slot(db: Session, org_id) -> None:
+    from craftsman.core.models import Org
+
+    db.execute(
+        update(Org)
+        .where(Org.id == org_id, Org.sent_today > 0)
+        .values(sent_today=Org.sent_today - 1)
+    )
+
+
 def reserve_campaign_slot(db: Session, campaign: Campaign) -> bool:
     """Atomically claim one send against the campaign's daily cap.
 

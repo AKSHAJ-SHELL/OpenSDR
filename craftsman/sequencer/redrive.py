@@ -74,7 +74,7 @@ def redrive_unsent_claims(db: Session, *, after_minutes: int, now: datetime | No
     tick re-sends. Returns the number of claims re-driven."""
     from datetime import timedelta
 
-    from craftsman.sender.smtp import release_campaign_slot
+    from craftsman.sender.smtp import release_campaign_slot, release_org_slot
 
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=after_minutes)
@@ -92,6 +92,7 @@ def redrive_unsent_claims(db: Session, *, after_minutes: int, now: datetime | No
         db.delete(msg)  # remove the claim so the re-send doesn't hit the unique index
         if enrollment is not None:
             release_campaign_slot(db, enrollment.campaign_id)
+            release_org_slot(db, enrollment.org_id)
             if enrollment.state == "ready":
                 enrollment.next_action_at = now  # tick set it to NULL on dispatch; re-arm it
                 db.add(enrollment)

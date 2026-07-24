@@ -123,7 +123,9 @@ def generate_and_send(self, enrollment_id: str):
         deliver,
         last_outbound_in_thread,
         release_campaign_slot,
+        release_org_slot,
         reserve_campaign_slot,
+        reserve_org_slot,
         run_presend_checks,
     )
     from craftsman.sequencer.machine import Event
@@ -211,12 +213,19 @@ def generate_and_send(self, enrollment_id: str):
             return
 
         campaign_id = campaign.id
+        org_id = campaign.org_id
 
         # per-campaign daily cap: atomic reserve, committed immediately so the row lock
         # is not held across the SMTP send. Concurrent workers can't collectively exceed.
         if not reserve_campaign_slot(db, campaign):
             record_rejection("campaign_daily_cap")
             raise self.retry(countdown=3600)  # cap reached; resets at midnight
+        # per-org daily cap (M5.1c): a second atomic reserve; NULL = unlimited
+        if not reserve_org_slot(db, org_id):
+            release_campaign_slot(db, campaign_id)
+            db.commit()
+            record_rejection("org_daily_cap")
+            raise self.retry(countdown=3600)
         db.commit()
 
         prev = last_outbound_in_thread(db, enrollment.id)
@@ -249,7 +258,8 @@ def generate_and_send(self, enrollment_id: str):
             db.flush()
         except IntegrityError:
             db.rollback()  # this step was already sent by a prior attempt
-            release_campaign_slot(db, campaign_id)  # give back the slot we just reserved
+            release_campaign_slot(db, campaign_id)  # give back the slots we just reserved
+            release_org_slot(db, org_id)
             db.commit()
             log.info("duplicate send suppressed: enrollment %s step %s", enrollment_id, step_order)
             return
@@ -268,6 +278,7 @@ def generate_and_send(self, enrollment_id: str):
             # slot so the retry re-sends cleanly. (Only a hard crash leaves a stuck claim.)
             db.delete(claim)
             release_campaign_slot(db, campaign_id)
+            release_org_slot(db, org_id)
             db.commit()
             raise self.retry(countdown=60)
 
@@ -751,6 +762,7 @@ def enrich_lead(lead_id: str):
         apply_enrichment,
         build_enrichment_chain,
         chain_enrich,
+        reserve_enrichment_calls,
     )
     from craftsman.ingest.verify import verify_email
 
@@ -768,6 +780,13 @@ def enrich_lead(lead_id: str):
         try:  # noqa: SIM105 — enrichment must never un-verify a lead
             chain = build_enrichment_chain(get_settings())
             if not chain:
+                return
+            # per-org daily enrichment budget (M5.1c): exhausted ⇒ verify-only
+            if not reserve_enrichment_calls(db, lead.org_id, len(chain)):
+                log.info(
+                    "enrichment budget exhausted for org %s — verify-only for lead %s",
+                    lead.org_id, lead_id,
+                )
                 return
             company = db.get(Company, lead.company_id) if lead.company_id else None
             inp = EnrichmentInput(
@@ -934,3 +953,8 @@ def reset_daily_counters():
                     db.add(mailbox)
                 # zero the per-campaign send counters used by the atomic cap reserve
                 db.execute(update(Campaign).values(sent_today=0))
+        # zero the per-org quota counters (M5.1c) — Org is not org-scoped, so this
+        # single UPDATE covers every tenant
+        from craftsman.core.models import Org
+
+        db.execute(update(Org).values(sent_today=0, enrichment_calls_today=0))

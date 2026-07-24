@@ -9,9 +9,8 @@ The guarantees under test:
 
 import uuid
 
-from sqlalchemy import select
 
-from craftsman.core.models import Campaign, Enrollment, Lead, SequenceStep, Variant
+from craftsman.core.models import Campaign, Enrollment, Lead, Variant
 
 SKELETON = (
     "Subject: {{subject_hook}}\n\n"

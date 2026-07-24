@@ -11,7 +11,6 @@ The guarantees under test:
 """
 
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -24,7 +23,6 @@ from craftsman.core.models import (
     ReviewQueueItem,
     SequenceStep,
     SuppressionEntry,
-    Variant,
 )
 
 SKELETON = (

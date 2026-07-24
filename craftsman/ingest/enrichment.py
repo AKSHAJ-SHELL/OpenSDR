@@ -259,3 +259,26 @@ def apply_enrichment(
     if not lead.source and provenance:
         lead.source = provenance[0].source
     db.add(lead)
+
+
+def reserve_enrichment_calls(db, org_id, n: int) -> bool:
+    """Atomically consume n provider calls from the org's daily enrichment
+    budget (M5.1c). NULL budget = unlimited (self-hoster default). Refused ⇒
+    the caller skips enrichment for now — verify-only, logged, never an error;
+    the counter resets with the daily sweep."""
+    from sqlalchemy import or_, update
+
+    from craftsman.core.models import Org
+
+    result = db.execute(
+        update(Org)
+        .where(
+            Org.id == org_id,
+            or_(
+                Org.enrichment_daily_budget.is_(None),
+                Org.enrichment_calls_today + n <= Org.enrichment_daily_budget,
+            ),
+        )
+        .values(enrichment_calls_today=Org.enrichment_calls_today + n)
+    )
+    return result.rowcount == 1
