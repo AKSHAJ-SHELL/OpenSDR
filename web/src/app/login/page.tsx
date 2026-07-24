@@ -1,71 +1,54 @@
-"use client";
+import { LoginForm } from "@/components/login/LoginForm";
 
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+export const dynamic = "force-dynamic";
 
-export default function LoginPage() {
-  const router = useRouter();
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+const API_BASE =
+  process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    startTransition(async () => {
-      const res = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
-      });
-      if (res.ok) {
-        router.replace("/");
-        router.refresh();
-      } else {
-        setError("Incorrect password.");
-        setPassword("");
-      }
+/** The SSO link is followed by the browser, so prefer the public base URL. */
+const PUBLIC_API_BASE =
+  process.env.NEXT_PUBLIC_API_URL ?? process.env.API_URL ?? "http://127.0.0.1:8000";
+
+/** Human-friendly (and deliberately vague) messages for ?error= SSO reasons. */
+const SSO_ERRORS: Record<string, string> = {
+  sso_denied: "SSO sign-in was cancelled. Try again, or sign in with a password.",
+  sso_state_invalid: "That SSO sign-in expired or was invalid. Please try again.",
+  sso_exchange_failed: "SSO sign-in didn't complete. Please try again.",
+  sso_unknown_user: "SSO sign-in didn't complete. Ask an owner to add your account, then try again.",
+  sso_user_disabled: "This account can't sign in. Contact an owner.",
+};
+
+async function ssoEnabled(): Promise<boolean> {
+  try {
+    const key = process.env.CRAFTSMAN_API_KEY;
+    const res = await fetch(`${API_BASE}/auth/sso/status`, {
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      },
     });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return body?.enabled === true;
+  } catch {
+    return false;
   }
+}
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const { error } = await searchParams;
+  const sso = await ssoEnabled();
+  const ssoError = error ? (SSO_ERRORS[error] ?? "Sign-in didn't complete. Please try again.") : null;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-bg px-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-sm rounded-[var(--radius)] border border-line bg-surface p-8 shadow-[var(--shadow)]"
-      >
-        <h1 className="font-[family-name:var(--font-display)] text-2xl text-ink">
-          Craftsman
-        </h1>
-        <p className="mt-1 text-sm text-muted">Sign in to the dashboard.</p>
-
-        <label
-          htmlFor="password"
-          className="mt-6 block text-[11px] font-semibold uppercase tracking-[0.08em] text-faint"
-        >
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          autoFocus
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="mt-2 w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink outline-none focus:border-ink"
-        />
-
-        {error ? (
-          <p className="mt-3 text-xs font-medium text-red-600">{error}</p>
-        ) : null}
-
-        <button
-          type="submit"
-          disabled={pending || !password}
-          className="mt-6 w-full rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-accent-ink transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {pending ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
-    </div>
+    <LoginForm
+      ssoHref={sso ? `${PUBLIC_API_BASE}/auth/oidc/login` : null}
+      initialError={ssoError}
+    />
   );
 }

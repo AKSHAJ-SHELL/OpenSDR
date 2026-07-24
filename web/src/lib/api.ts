@@ -25,6 +25,8 @@ import type {
   SourcedPreview,
   SourceSearchRequest,
   Step,
+  UserOut,
+  Role,
   VariantDetail,
   VariantUpdate,
 } from "./types";
@@ -190,6 +192,13 @@ export const api = {
   dialTask: (id: string) =>
     post<{ call_sid: string; to_operator: string }>(`/tasks/${id}/dial`),
   leadTimeline: (leadId: string) => get<TimelineItem[]>(`/leads/${leadId}/timeline`),
+  users: () => get<UserOut[]>("/users"),
+  createUser: (body: { email: string; role: Role; display_name?: string; password?: string }) =>
+    post<UserOut>("/users", body),
+  updateUser: (
+    id: string,
+    body: { role?: Role; display_name?: string; disabled?: boolean; password?: string },
+  ) => patch<UserOut>(`/users/${id}`, body),
 };
 
 export function apiBase() {

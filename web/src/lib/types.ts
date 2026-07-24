@@ -360,6 +360,22 @@ export type Task = {
   dialer_available: boolean;
 };
 
+// ---------------------------------------------------------------- users & RBAC (M5.1b)
+
+export type Role = "owner" | "operator" | "viewer";
+
+export type UserOut = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: Role;
+  has_password: boolean;
+  sso_linked: boolean;
+  disabled_at: string | null;
+  last_login_at: string | null;
+  created_at: string | null;
+};
+
 export type TimelineItem = {
   kind: "email_sent" | "reply" | "task" | string;
   at: string;

@@ -14,6 +14,7 @@ const NAV = [
   { href: "/campaigns", label: "Campaigns" },
   { href: "/deliverability", label: "Deliverability" },
   { href: "/analytics", label: "Analytics" },
+  { href: "/settings/users", label: "Users" },
 ];
 
 export function Sidebar() {
