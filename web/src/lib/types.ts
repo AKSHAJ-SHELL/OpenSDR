@@ -2,8 +2,12 @@ export type Overview = {
   sent: number;
   replies: number;
   interested: number;
+  booked: number;
   reply_rate: number;
+  funnel: { sent: number; replied: number; interested: number; booked: number };
   copywriter_rejections: number;
+  reply_drafts: Record<string, number>;
+  draft_acceptance_rate: number;
   enrollment_states: Record<string, number>;
   lead_statuses: Record<string, number>;
 };
@@ -125,6 +129,26 @@ export type InboxMessage = {
   company_domain: string | null;
 };
 
+export type ReplyDraft = {
+  id: string;
+  inbound_message_id: string;
+  enrollment_id: string | null;
+  skeleton_key: string | null;
+  body: string | null;
+  status: string;
+  auto_sent: boolean;
+  detail: Record<string, unknown> | null;
+  sent_message_id: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  lead_email: string | null;
+  lead_name: string | null;
+  campaign_name: string | null;
+  inbound_subject: string | null;
+  inbound_body: string | null;
+  inbound_classification: string | null;
+};
+
 export type Campaign = {
   id: string;
   name: string;
@@ -132,6 +156,9 @@ export type Campaign = {
   daily_cap: number;
   icp_description?: string | null;
   value_prop?: string | null;
+  scheduling_url?: string | null;
+  info_doc_url?: string | null;
+  autopilot_enabled?: boolean;
 };
 
 export type SenderPersona = {
@@ -179,7 +206,10 @@ export type CampaignCreate = {
 };
 
 export type CampaignUpdate = Partial<
-  Pick<Campaign, "name" | "icp_description" | "value_prop" | "daily_cap">
+  Pick<
+    Campaign,
+    "name" | "icp_description" | "value_prop" | "daily_cap" | "scheduling_url" | "info_doc_url"
+  >
 > & { sender_persona?: SenderPersona };
 
 export type VariantUpdate = {

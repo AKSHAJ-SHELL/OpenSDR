@@ -81,6 +81,8 @@ function FieldsCard({ campaign }: { campaign: CampaignDetail }) {
     persona_title: persona.title ?? "",
     persona_company: persona.company ?? "",
     persona_calendly: persona.calendly ?? "",
+    scheduling_url: campaign.scheduling_url ?? "",
+    info_doc_url: campaign.info_doc_url ?? "",
   });
   const { pending, error, run } = useAction();
 
@@ -129,7 +131,33 @@ function FieldsCard({ campaign }: { campaign: CampaignDetail }) {
         {field("persona_name", "Sender name")}
         {field("persona_title", "Sender title")}
         {field("persona_company", "Sender company")}
-        {field("persona_calendly", "Scheduling link")}
+        {field("persona_calendly", "Signature scheduling link")}
+        <label className="block">
+          <span className={labelCls}>Booking link (reply drafts)</span>
+          <input
+            value={form.scheduling_url}
+            onChange={(e) => setForm({ ...form, scheduling_url: e.target.value })}
+            className={inputCls}
+            placeholder="https://cal.com/you/15min"
+          />
+          <span className="mt-1 block text-[11px] text-faint">
+            Embedded verbatim in interested-reply drafts; bookings flow back via the
+            Cal.com webhook.
+          </span>
+        </label>
+        <label className="block">
+          <span className={labelCls}>One-pager link (info replies)</span>
+          <input
+            value={form.info_doc_url}
+            onChange={(e) => setForm({ ...form, info_doc_url: e.target.value })}
+            className={inputCls}
+            placeholder="https://yoursite.com/one-pager.pdf"
+          />
+          <span className="mt-1 block text-[11px] text-faint">
+            The approved document for &quot;send me info&quot; replies. Without it,
+            Autopilot always escalates those.
+          </span>
+        </label>
       </div>
       <div className="mt-4">
         <button
@@ -148,6 +176,8 @@ function FieldsCard({ campaign }: { campaign: CampaignDetail }) {
                   company: form.persona_company,
                   calendly: form.persona_calendly,
                 },
+                scheduling_url: form.scheduling_url || null,
+                info_doc_url: form.info_doc_url || null,
               }),
             )
           }

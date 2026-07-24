@@ -175,6 +175,16 @@ class Campaign(Base):
     )
     status: Mapped[str] = mapped_column(Text, default="draft")  # draft|active|paused|done
     icp_embedding: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIM))
+    # M4.3: static links embedded in reply drafts — campaign config, never LLM output.
+    # scheduling_url: the rep's booking page (Cal.com etc.); info_doc_url: the approved
+    # one-pager for "send me info" replies. Empty = the corresponding line is omitted.
+    scheduling_url: Mapped[str | None] = mapped_column(Text)
+    info_doc_url: Mapped[str | None] = mapped_column(Text)
+    # M4.4 (⛔ Gate M4 Option B): opt-in Guarded Autopilot. Enable requires an
+    # admin-scoped call; the operate-scoped kill switch disables instantly.
+    autopilot_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     steps: Mapped[list["SequenceStep"]] = relationship(
         back_populates="campaign", order_by="SequenceStep.step_order"
@@ -321,6 +331,116 @@ class TouchTask(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     enrollment: Mapped[Enrollment] = relationship()
+
+
+class Meeting(Base):
+    """A booked meeting (M4.3, G8) — the funnel's terminal win, learned from a
+    signed calendar-provider webhook. UNIQUE(provider_event_id) makes webhook
+    redelivery an update, not a duplicate. No FK cascade per M0.4 doctrine;
+    erase_lead deletes these rows (attendee identity is person-linked)."""
+
+    __tablename__ = "meetings"
+    __table_args__ = (
+        UniqueConstraint("provider_event_id", name="uq_meeting_provider_event"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("enrollments.id"), index=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # proposed|booked|completed|cancelled|no_show
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+    enrollment: Mapped[Enrollment | None] = relationship()
+
+
+class EscalationRule(Base):
+    """When a human is pulled in, as data (M4.2, G9). NULL campaign_id = global.
+
+    `match` JSONB: {classifications: [..]|null, min_confidence, max_confidence,
+    keywords_any: [..]|null} — AND-ed, null = wildcard. `actions` JSONB: {notify,
+    urgent_notify, suppress, review_queue, block_draft, block_autopilot} booleans.
+    DB rules ADD to the built-in defaults (inbox/escalation.py) — the legal-threat
+    tripwire and the interested-notify baseline cannot be disabled from data.
+    """
+
+    __tablename__ = "escalation_rules"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("campaigns.id"), index=True
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=100, server_default=text("100")
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    match: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    actions: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class ReplyDraft(Base):
+    """A validated, skeleton-rendered reply waiting for a human (M4.1 Copilot).
+
+    Exactly one draft per inbound message (UNIQUE) — the insert is the generation
+    idempotency claim, mirroring the send/touch-task pattern. Statuses:
+      generating   — claim row, LLM round-trip in flight
+      pending      — validated draft awaiting a human decision
+      sending      — dispatch claim (CAS from pending) held across the SMTP send
+      sent         — approved verbatim and dispatched (human click, or Autopilot
+                     with auto_sent=true under M4.4's policy engine)
+      edited_sent  — human edited, edit re-validated, dispatched
+      discarded    — human declined (or suppression cancelled it; see detail)
+      failed       — validator rejected twice; routed to review queue
+      skipped      — deliberately not drafted (objection kind needs a human,
+                     escalation blocked it) — recorded for auditability
+    `body` is lead-personalized content quoting prospect-authored text (person PII):
+    erase_lead deletes these rows, before messages (FK). No FK cascade per M0.4.
+    """
+
+    __tablename__ = "reply_drafts"
+    __table_args__ = (
+        UniqueConstraint("inbound_message_id", name="uq_reply_draft_inbound"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    inbound_message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("messages.id"), nullable=False
+    )
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("enrollments.id"), index=True
+    )
+    skeleton_key: Mapped[str | None] = mapped_column(Text)  # reply_interested | reply_objection_timing | reply_objection_info
+    slots: Mapped[dict | None] = mapped_column(JSONB)
+    body: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )
+    auto_sent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    detail: Mapped[dict | None] = mapped_column(JSONB)  # validator errors / skip reason
+    sent_message_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("messages.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    inbound_message: Mapped[Message] = relationship(foreign_keys=[inbound_message_id])
+    enrollment: Mapped[Enrollment | None] = relationship()
 
 
 class Mailbox(Base):

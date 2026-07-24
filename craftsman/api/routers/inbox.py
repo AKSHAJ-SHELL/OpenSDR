@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,9 +8,19 @@ from sqlalchemy.orm import Session
 
 from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
-from craftsman.core.models import Campaign, Company, Enrollment, Lead, Message, ReviewQueueItem
-from craftsman.core.schemas import MessageOut, ReplyClassification, ReviewItemOut
+from craftsman.core.models import (
+    Campaign,
+    Company,
+    Enrollment,
+    Lead,
+    Message,
+    ReplyDraft,
+    ReviewQueueItem,
+)
+from craftsman.core.schemas import MessageOut, ReplyClassification, ReplyDraftOut, ReviewItemOut
 from craftsman.inbox.pipeline import apply_classification
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/inbox", tags=["inbox"])
 
@@ -180,5 +191,130 @@ def reclassify(msg_id: uuid.UUID, payload: Reclassify, db: Session = Depends(get
     )
     enrollment = db.get(Enrollment, msg.enrollment_id) if msg.enrollment_id else None
     if outbound is not None:
-        apply_classification(db, enrollment, outbound, classification)
+        def _enqueue_draft(mid):
+            # drafting is best-effort from the API: a broker outage must not
+            # break the human's reclassify action itself
+            try:
+                from craftsman.workers.tasks import generate_reply_draft
+
+                generate_reply_draft.delay(str(mid))
+            except Exception as e:  # pragma: no cover - broker-down path
+                log.warning("could not enqueue reply draft for %s: %s", mid, e)
+
+        apply_classification(
+            db, enrollment, outbound, classification,
+            inbound_message_id=msg.id,
+            enqueue_draft=_enqueue_draft,
+        )
     return _enrich(db, msg)
+
+
+# ---------------------------------------------------------------- reply drafts (M4.1)
+
+
+def _draft_out(db: Session, draft: ReplyDraft) -> ReplyDraftOut:
+    out = ReplyDraftOut.model_validate(draft)
+    inbound = db.get(Message, draft.inbound_message_id)
+    if inbound is not None:
+        out.inbound_subject = inbound.subject
+        out.inbound_body = inbound.body
+        out.inbound_classification = inbound.classification
+    if draft.enrollment_id:
+        row = db.execute(
+            select(Lead, Campaign.name)
+            .join(Enrollment, Enrollment.lead_id == Lead.id)
+            .outerjoin(Campaign, Enrollment.campaign_id == Campaign.id)
+            .where(Enrollment.id == draft.enrollment_id)
+        ).first()
+        if row:
+            lead, campaign_name = row
+            out.lead_email = lead.email
+            out.lead_name = " ".join(
+                p for p in (lead.first_name, lead.last_name) if p
+            ) or None
+            out.campaign_name = campaign_name
+    return out
+
+
+@router.get(
+    "/drafts",
+    response_model=list[ReplyDraftOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def list_drafts(
+    status: str = "pending",
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """Copilot drafts. Default: pending only (what a human can act on).
+    `status=all` includes the audit trail (sent/edited_sent/discarded/failed/skipped)."""
+    stmt = select(ReplyDraft).order_by(ReplyDraft.created_at.desc()).limit(min(limit, 500))
+    if status != "all":
+        stmt = stmt.where(ReplyDraft.status == status)
+    return [_draft_out(db, d) for d in db.scalars(stmt).all()]
+
+
+class DraftSendRequest(BaseModel):
+    body: str | None = None  # edited body; omitted = approve verbatim
+
+
+@router.post(
+    "/drafts/{draft_id}/send",
+    response_model=ReplyDraftOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
+async def send_draft(
+    draft_id: uuid.UUID, payload: DraftSendRequest, db: Session = Depends(get_db)
+):
+    """THE human click (M4.1): dispatch a pending draft through the send engine.
+    An edited body is re-validated by the same gates the LLM faced — 422 with the
+    validator's errors if it fails; Craftsman never sends what its validator
+    rejected. 409 on a non-pending draft (double click); 429 when the mailbox is
+    rate limited (retry after the indicated seconds)."""
+    from craftsman.sender.reply import (
+        DraftInvalid,
+        DraftUnavailable,
+        send_reply_draft,
+    )
+    from craftsman.sender.smtp import SendBlocked
+
+    draft = db.get(ReplyDraft, draft_id)
+    if draft is None:
+        raise HTTPException(404, "draft not found")
+    try:
+        await send_reply_draft(db, draft, edited_body=payload.body)
+    except DraftUnavailable as e:
+        raise HTTPException(409, str(e))
+    except DraftInvalid as e:
+        raise HTTPException(422, {"validation_errors": e.errors})
+    except SendBlocked as e:
+        # draft state was already settled (back to pending, or discarded when
+        # suppressed) and committed inside send_reply_draft
+        if e.reason == "rate_limited":
+            raise HTTPException(
+                429, f"mailbox rate limited; retry in {int(e.retry_in or 60)}s"
+            )
+        if e.reason == "suppressed":
+            raise HTTPException(409, "lead is suppressed; draft discarded — do not contact")
+        raise HTTPException(503, f"send blocked: {e.reason}")
+    return _draft_out(db, draft)
+
+
+@router.post(
+    "/drafts/{draft_id}/discard",
+    response_model=ReplyDraftOut,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def discard_draft(draft_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Human declined the draft. The reply still deserves an answer — just not
+    this one; the thread stays in the inbox."""
+    from craftsman.sender.reply import DraftUnavailable, discard_reply_draft
+
+    draft = db.get(ReplyDraft, draft_id)
+    if draft is None:
+        raise HTTPException(404, "draft not found")
+    try:
+        discard_reply_draft(db, draft)
+    except DraftUnavailable as e:
+        raise HTTPException(409, str(e))
+    return _draft_out(db, draft)

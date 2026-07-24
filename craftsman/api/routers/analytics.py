@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from craftsman.api.auth import require_scope
 from craftsman.api.deps import get_db
-from craftsman.core.models import Enrollment, Lead, Message, ReviewQueueItem
+from craftsman.core.models import Enrollment, Lead, Meeting, Message, ReplyDraft, ReviewQueueItem
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -27,6 +27,21 @@ def overview(db: Session = Depends(get_db)):
         select(func.count(ReviewQueueItem.id)).where(ReviewQueueItem.kind == "copywriter")
     ) or 0
 
+    # M4.3: booked meetings — the funnel's terminal win
+    booked = db.scalar(
+        select(func.count(Meeting.id)).where(Meeting.status.in_(["booked", "completed"]))
+    ) or 0
+
+    # Copilot drafts (M4.1): acceptance rate over human-resolved drafts — the reply
+    # reward process is deliberately separate from the bandit (drafts never move α/β)
+    draft_states = dict(
+        db.execute(
+            select(ReplyDraft.status, func.count(ReplyDraft.id)).group_by(ReplyDraft.status)
+        ).all()
+    )
+    accepted = draft_states.get("sent", 0) + draft_states.get("edited_sent", 0)
+    decided = accepted + draft_states.get("discarded", 0)
+
     states = dict(
         db.execute(
             select(Enrollment.state, func.count(Enrollment.id)).group_by(Enrollment.state)
@@ -40,8 +55,12 @@ def overview(db: Session = Depends(get_db)):
         "sent": sent,
         "replies": replies,
         "interested": interested,
+        "booked": booked,
         "reply_rate": round(replies / sent, 4) if sent else 0.0,
+        "funnel": {"sent": sent, "replied": replies, "interested": interested, "booked": booked},
         "copywriter_rejections": copy_rejections,  # public proof of the anti-hallucination claim
+        "reply_drafts": draft_states,
+        "draft_acceptance_rate": round(accepted / decided, 4) if decided else 0.0,
         "enrollment_states": states,
         "lead_statuses": lead_statuses,
     }

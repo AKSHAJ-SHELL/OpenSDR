@@ -60,6 +60,24 @@ class Settings(BaseSettings):
     call_pain_max_words: int = 20
     call_objection_max_words: int = 40
 
+    # Reply drafts (M4.1). ⛔ Gate M4 approved defaults: rendered reply ≤ 120 words;
+    # timing-objection drafts offer a follow-up in 4 weeks (skeleton static slot).
+    reply_draft_max_words: int = 120
+    reply_followup_weeks: int = 4
+
+    # Meeting booking (M4.3) — BYO Cal.com. Keyless-off: no webhook secret, no
+    # webhook processing (503); scheduling links in drafts work regardless.
+    # calcom_api_key reserved for future link management; verification only needs
+    # the webhook secret.
+    calcom_api_key: str = ""
+    calcom_webhook_secret: str = ""
+
+    # Guarded Autopilot (M4.4, ⛔ Gate M4 Option B). Per-campaign flag lives in the
+    # DB (admin-scoped enable). ⛔ Below this confidence Autopilot never fires.
+    # The ≤1-auto-reply-per-thread invariant is HARDCODED in inbox/autopilot.py,
+    # deliberately not a knob.
+    autopilot_min_confidence: float = 0.9
+
     # Optional Twilio click-to-dial (M3.3) — BYO account; disabled unless all four are
     # set. Rings the operator first, then dials the lead (no robocalls to prospects).
     twilio_account_sid: str = ""

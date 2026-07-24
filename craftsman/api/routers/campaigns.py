@@ -13,6 +13,7 @@ from craftsman.core.models import (
     Campaign,
     DryRun,
     Enrollment,
+    EscalationRule,
     Lead,
     SequenceStep,
     SignalRule,
@@ -27,6 +28,8 @@ from craftsman.core.schemas import (
     DryRunItemOut,
     DryRunOut,
     DryRunRequest,
+    EscalationRuleCreate,
+    EscalationRuleOut,
     SignalRuleCreate,
     SignalRuleOut,
     StepCreate,
@@ -155,6 +158,8 @@ async def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)
         value_prop=payload.value_prop,
         sender_persona=payload.sender_persona,
         daily_cap=payload.daily_cap,
+        scheduling_url=payload.scheduling_url,
+        info_doc_url=payload.info_doc_url,
     )
     embedder = get_embedder()
     campaign.icp_embedding = (await embedder.embed([payload.icp_description]))[0]
@@ -594,3 +599,142 @@ def bandit_posteriors(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
         )
         for v, step_order in rows
     ]
+
+
+# ---------------------------------------------------------------- escalation rules (M4.2)
+
+
+@router.get(
+    "/{campaign_id}/escalation-rules",
+    response_model=list[EscalationRuleOut],
+    dependencies=[Depends(require_scope("read"))],
+)
+def list_escalation_rules(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Effective ruleset: built-in defaults (read-only, `builtin: true`) + global
+    rules (campaign_id null) + this campaign's rules. DB rules ADD to the defaults;
+    the legal-threat tripwire cannot be disabled from data."""
+    from sqlalchemy import or_
+
+    from craftsman.inbox.escalation import default_rules
+
+    if db.get(Campaign, campaign_id) is None:
+        raise HTTPException(404, "campaign not found")
+    out: list[EscalationRuleOut] = []
+    for rule in default_rules(get_settings().classifier_confidence_threshold):
+        out.append(
+            EscalationRuleOut(
+                id=uuid.uuid5(uuid.NAMESPACE_URL, f"craftsman:builtin:{rule.name}"),
+                campaign_id=None,
+                name=rule.name,
+                priority=rule.priority,
+                enabled=True,
+                match={
+                    "classifications": list(rule.classifications) if rule.classifications else None,
+                    "min_confidence": rule.min_confidence,
+                    "max_confidence": rule.max_confidence,
+                    "keywords_any": list(rule.keywords_any) if rule.keywords_any else None,
+                },
+                actions={
+                    "notify": rule.notify,
+                    "urgent_notify": rule.urgent_notify,
+                    "suppress": rule.suppress,
+                    "review_queue": rule.review_queue,
+                    "block_draft": rule.block_draft,
+                    "block_autopilot": rule.block_autopilot,
+                },
+                builtin=True,
+            )
+        )
+    rows = db.scalars(
+        select(EscalationRule)
+        .where(
+            or_(
+                EscalationRule.campaign_id.is_(None),
+                EscalationRule.campaign_id == campaign_id,
+            )
+        )
+        .order_by(EscalationRule.priority, EscalationRule.created_at)
+    ).all()
+    out.extend(EscalationRuleOut.model_validate(r) for r in rows)
+    return out
+
+
+@router.post(
+    "/{campaign_id}/escalation-rules",
+    response_model=EscalationRuleOut,
+    status_code=201,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def create_escalation_rule(
+    campaign_id: uuid.UUID, body: EscalationRuleCreate, db: Session = Depends(get_db)
+):
+    """Add a rule for this campaign. Matching is AND across the given conditions
+    (null = wildcard); the decision applied to a reply is the UNION of every
+    matching rule's actions — a new rule can never shadow the built-in tripwire."""
+    if db.get(Campaign, campaign_id) is None:
+        raise HTTPException(404, "campaign not found")
+    rule = EscalationRule(
+        campaign_id=campaign_id,
+        name=body.name,
+        priority=body.priority,
+        enabled=body.enabled,
+        match=body.match.model_dump(),
+        actions=body.actions.model_dump(),
+    )
+    db.add(rule)
+    db.flush()
+    return EscalationRuleOut.model_validate(rule)
+
+
+@router.delete(
+    "/{campaign_id}/escalation-rules/{rule_id}",
+    status_code=204,
+    dependencies=[Depends(require_scope("operate"))],
+)
+def delete_escalation_rule(
+    campaign_id: uuid.UUID, rule_id: uuid.UUID, db: Session = Depends(get_db)
+):
+    rule = db.get(EscalationRule, rule_id)
+    if rule is None or rule.campaign_id != campaign_id:
+        raise HTTPException(404, "escalation rule not found")
+    db.delete(rule)
+
+
+# ---------------------------------------------------------------- guarded autopilot (M4.4)
+
+
+@router.post(
+    "/{campaign_id}/autopilot/enable",
+    dependencies=[Depends(require_scope("admin"))],
+)
+def enable_autopilot(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """⛔ Gate M4 Option B. ADMIN-scoped by design — deliberate friction: the
+    dashboard's read+operate key cannot flip this; a human with the admin key must.
+    What it enables: auto-send of validated, template-constrained drafts for the
+    three deterministic intents only, confidence ≥ AUTOPILOT_MIN_CONFIDENCE, no
+    escalation match, business hours, ≤ 1 auto-reply per thread ever."""
+    from craftsman.core.models import AuditLog
+
+    campaign = _get_campaign_or_404(db, campaign_id)
+    campaign.autopilot_enabled = True
+    db.add(campaign)
+    db.add(AuditLog(event="autopilot_enabled", detail={"campaign_id": str(campaign_id)}))
+    db.flush()
+    return {"autopilot_enabled": True}
+
+
+@router.post(
+    "/{campaign_id}/autopilot/disable",
+    dependencies=[Depends(require_scope("operate"))],
+)
+def disable_autopilot(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
+    """The kill switch — OPERATE-scoped (easier to stop than to start), instant:
+    the flag is read fresh at every policy evaluation."""
+    from craftsman.core.models import AuditLog
+
+    campaign = _get_campaign_or_404(db, campaign_id)
+    campaign.autopilot_enabled = False
+    db.add(campaign)
+    db.add(AuditLog(event="autopilot_disabled", detail={"campaign_id": str(campaign_id)}))
+    db.flush()
+    return {"autopilot_enabled": False}

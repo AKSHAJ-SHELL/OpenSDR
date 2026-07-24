@@ -1,0 +1,7 @@
+Hi {{first_name}},
+
+{{acknowledgment}}
+
+{{answer_bridge}}{{info_line}} {{cta_question}}
+
+{{signature}}

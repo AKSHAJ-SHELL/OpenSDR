@@ -119,6 +119,14 @@ def get_task(task_id: uuid.UUID, db: Session = Depends(get_db)):
     task = db.get(TouchTask, task_id)
     if task is None:
         raise HTTPException(404, "task not found")
+    # Same do-not-contact re-check as the list endpoint: an open task for a lead
+    # suppressed since generation is cancelled on read, so the caller sees the
+    # cancelled status instead of an actionable touch.
+    if task.status == "open":
+        enrollment = db.get(Enrollment, task.enrollment_id)
+        lead = db.get(Lead, enrollment.lead_id) if enrollment else None
+        if lead is not None and is_suppressed(db, lead.email):
+            cancel_open_tasks(db, task.enrollment_id, reason="suppressed")
     return _task_out(db, task, datetime.now(timezone.utc))
 
 
@@ -146,6 +154,8 @@ def complete_task(task_id: uuid.UUID, body: TaskCompleteRequest, db: Session = D
     lead = db.get(Lead, enrollment.lead_id) if enrollment else None
     if lead is not None and is_suppressed(db, lead.email):
         cancel_open_tasks(db, task.enrollment_id, reason="suppressed")
+        # get_db rolls back on the 409 — the cancellation must outlive the error
+        db.commit()
         raise HTTPException(409, "lead is suppressed; task cancelled — do not contact")
 
     try:
@@ -181,6 +191,8 @@ async def dial_task(task_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(422, "lead has no phone number")
     if is_suppressed(db, lead.email):
         cancel_open_tasks(db, task.enrollment_id, reason="suppressed")
+        # get_db rolls back on the 409 — the cancellation must outlive the error
+        db.commit()
         raise HTTPException(409, "lead is suppressed; task cancelled — do not contact")
 
     dialer = build_dialer(get_settings())
@@ -208,6 +220,13 @@ def skip_task(task_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(404, "task not found")
     if task.status != "open":
         raise HTTPException(409, f"task is {task.status}, not open")
+    enrollment = db.get(Enrollment, task.enrollment_id)
+    lead = db.get(Lead, enrollment.lead_id) if enrollment else None
+    if lead is not None and is_suppressed(db, lead.email):
+        cancel_open_tasks(db, task.enrollment_id, reason="suppressed")
+        # get_db rolls back on the 409 — the cancellation must outlive the error
+        db.commit()
+        raise HTTPException(409, "lead is suppressed; task cancelled — do not contact")
     try:
         resolve_task(db, task, "skipped")
     except ValueError as e:

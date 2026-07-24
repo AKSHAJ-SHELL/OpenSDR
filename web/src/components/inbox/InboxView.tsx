@@ -2,9 +2,10 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { api } from "@/lib/api";
-import type { InboxMessage } from "@/lib/types";
+import type { InboxMessage, ReplyDraft } from "@/lib/types";
 import { Badge, statusTone } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { ReplyDraftCard } from "@/components/inbox/ReplyDraftCard";
 
 const LABELS = [
   "all",
@@ -16,8 +17,15 @@ const LABELS = [
   "bounce_or_auto",
 ] as const;
 
-export function InboxView({ initial }: { initial: InboxMessage[] }) {
+export function InboxView({
+  initial,
+  initialDrafts = [],
+}: {
+  initial: InboxMessage[];
+  initialDrafts?: ReplyDraft[];
+}) {
   const [messages, setMessages] = useState(initial);
+  const [drafts, setDrafts] = useState(initialDrafts);
   const [filter, setFilter] = useState<(typeof LABELS)[number]>("all");
   const [selectedId, setSelectedId] = useState<string | null>(
     initial[0]?.id ?? null,
@@ -31,6 +39,13 @@ export function InboxView({ initial }: { initial: InboxMessage[] }) {
 
   const selected =
     filtered.find((m) => m.id === selectedId) ?? filtered[0] ?? null;
+  const selectedDraft = selected
+    ? drafts.find((d) => d.inbound_message_id === selected.id) ?? null
+    : null;
+
+  function updateDraft(updated: ReplyDraft) {
+    setDrafts((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+  }
 
   function load(label: (typeof LABELS)[number]) {
     setFilter(label);
@@ -152,6 +167,9 @@ export function InboxView({ initial }: { initial: InboxMessage[] }) {
               <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink/90">
                 {selected.body || "No body."}
               </pre>
+              {selectedDraft ? (
+                <ReplyDraftCard draft={selectedDraft} onChange={updateDraft} />
+              ) : null}
             </div>
             <div className="border-t border-line px-6 py-4">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-faint">

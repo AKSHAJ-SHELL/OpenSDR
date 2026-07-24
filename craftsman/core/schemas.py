@@ -58,6 +58,21 @@ class ReplyClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+class ReplyDraftFill(BaseModel):
+    """Reply copywriter output (M4.1): only the slots, never a whole reply.
+
+    The LLM also picks WHICH fixed skeleton fits an objection (timing vs info vs
+    other) — an enum choice, not free text. `other` objections (pricing, competitor,
+    hostile) deliberately get NO draft: a human writes those. Rendered through the
+    reply-specific validator (grounding incl. the inbound reply text, commitment
+    gate, ≤ REPLY_DRAFT_MAX_WORDS, grade ≤ 8)."""
+
+    objection_kind: Literal["timing", "info", "other"] = "other"
+    acknowledgment: str
+    answer_bridge: str
+    cta_question: str
+
+
 # ---------------------------------------------------------------- API schemas
 
 
@@ -125,6 +140,8 @@ class CampaignCreate(BaseModel):
     value_prop: str
     sender_persona: dict = Field(default_factory=dict)
     daily_cap: int = 50
+    scheduling_url: str | None = None
+    info_doc_url: str | None = None
     steps: list[int] = Field(
         default=[0, 3, 4],
         description="wait_days per step; first entry is days before opener (usually 0)",
@@ -138,6 +155,9 @@ class CampaignOut(BaseModel):
     daily_cap: int
     icp_description: str | None = None
     value_prop: str | None = None
+    scheduling_url: str | None = None
+    info_doc_url: str | None = None
+    autopilot_enabled: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -253,6 +273,8 @@ class CampaignUpdate(BaseModel):
     value_prop: str | None = None
     sender_persona: dict | None = None
     daily_cap: int | None = Field(default=None, ge=1)
+    scheduling_url: str | None = None
+    info_doc_url: str | None = None
 
 
 class MailboxCreate(BaseModel):
@@ -357,6 +379,85 @@ class MessageOut(BaseModel):
     lead_email: str | None = None
     lead_name: str | None = None
     company_domain: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class MeetingOut(BaseModel):
+    id: uuid.UUID
+    enrollment_id: uuid.UUID | None
+    provider: str
+    provider_event_id: str
+    status: str
+    start_at: datetime | None
+    booked_at: datetime | None
+    created_at: datetime
+    lead_email: str | None = None
+    lead_name: str | None = None
+    campaign_name: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class EscalationMatch(BaseModel):
+    """AND-ed conditions; None = wildcard."""
+
+    classifications: list[str] | None = None
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    keywords_any: list[str] | None = None
+
+
+class EscalationActions(BaseModel):
+    notify: bool = False
+    urgent_notify: bool = False
+    suppress: bool = False
+    review_queue: bool = False
+    block_draft: bool = False
+    block_autopilot: bool = False
+
+
+class EscalationRuleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    priority: int = Field(default=100, ge=0)
+    enabled: bool = True
+    match: EscalationMatch = Field(default_factory=EscalationMatch)
+    actions: EscalationActions = Field(default_factory=EscalationActions)
+
+
+class EscalationRuleOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID | None
+    name: str
+    priority: int
+    enabled: bool
+    match: dict
+    actions: dict
+    builtin: bool = False
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ReplyDraftOut(BaseModel):
+    id: uuid.UUID
+    inbound_message_id: uuid.UUID
+    enrollment_id: uuid.UUID | None
+    skeleton_key: str | None
+    body: str | None
+    status: str
+    auto_sent: bool
+    detail: dict | None = None
+    sent_message_id: uuid.UUID | None = None
+    created_at: datetime
+    resolved_at: datetime | None = None
+    # joined context for the inbox UI
+    lead_email: str | None = None
+    lead_name: str | None = None
+    campaign_name: str | None = None
+    inbound_subject: str | None = None
+    inbound_body: str | None = None
+    inbound_classification: str | None = None
 
     model_config = {"from_attributes": True}
 

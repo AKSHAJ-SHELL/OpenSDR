@@ -18,6 +18,7 @@ MAX_BODY_WORDS = 90
 MAX_READING_GRADE = 8.0
 
 _BANNED_PATH = Path(__file__).parent / "banned_phrases.txt"
+_COMMITMENT_PATH = Path(__file__).parent / "commitment_terms.txt"
 
 
 def load_banned_phrases() -> list[str]:
@@ -29,7 +30,19 @@ def load_banned_phrases() -> list[str]:
     return phrases
 
 
+def load_commitment_terms() -> list[str]:
+    """Terms implying a commercial/legal commitment (M4.1) — same file format as
+    banned phrases; see commitment_terms.txt for the gate's semantics."""
+    terms = []
+    for line in _COMMITMENT_PATH.read_text().splitlines():
+        line = line.strip().lower()
+        if line and not line.startswith("#"):
+            terms.append(line)
+    return terms
+
+
 BANNED_PHRASES = load_banned_phrases()
+COMMITMENT_TERMS = load_commitment_terms()
 
 # Words that are capitalized mid-sentence but aren't claims about the world
 _COMMON_CAPS = {
@@ -304,6 +317,100 @@ def validate_task_fill(
     # 4. reading grade (LinkedIn prose only; briefs are fragments)
     if check_grade and rendered_text.strip():
         grade = textstat.flesch_kincaid_grade(rendered_text)
+        if grade > MAX_READING_GRADE:
+            errors.append(
+                f"reading grade {grade:.1f} (max {MAX_READING_GRADE:.0f}) — use shorter words and sentences"
+            )
+
+    return ValidationResult(ok=not errors, errors=errors)
+
+
+def validate_reply_fill(
+    *,
+    slots: dict[str, str],
+    rendered_body: str,
+    grounding_sources: list,
+    reply_text: str,
+    campaign_sources: list,
+    max_words: int,
+) -> ValidationResult:
+    """The gates for reply drafts (M4.1). `validate_fill` (email) is untouched.
+
+    `grounding_sources` are the TRUSTED sources (research brief, campaign config,
+    persona, lead fields); `reply_text` is the prospect's reply — it joins the
+    grounding corpus so the draft may reference what they actually said (and only
+    that), but it can never license a commitment. On top of the four inherited
+    gates, the commitment gate — a draft must not INTRODUCE commitments, fail-closed:
+
+    - commitment terms (commitment_terms.txt) appearing in the draft must also appear
+      in the campaign's own config (value_prop / persona) — grounding anywhere else
+      is NOT enough ("what's your pricing?" doesn't license a pricing promise);
+    - currency amounts must ground in a TRUSTED source. A brief-vetted fact
+      ("congrats on the $4M raise") passes; a prospect's "can you do $500?" can
+      never be echoed back as an offer on reply-text grounding alone.
+    """
+    errors: list[str] = []
+    trusted_corpus: list[str] = []
+    for src in grounding_sources:
+        trusted_corpus.extend(_collect_strings(src))
+    corpus = trusted_corpus + ([reply_text] if reply_text else [])
+    campaign_corpus: list[str] = []
+    for src in campaign_sources:
+        campaign_corpus.extend(_collect_strings(src))
+
+    # 1. grounding — entities fuzzy, numbers exact, over the full corpus (reply incl.)
+    corpus_numerics = _corpus_numerics(corpus)
+    trusted_numerics = _corpus_numerics(trusted_corpus)
+    for slot_name, value in slots.items():
+        proper, numbers = extract_claims(value)
+        for claim in proper:
+            if not _grounded(claim, corpus):
+                errors.append(
+                    f"slot '{slot_name}': claim '{claim}' not found in research brief, "
+                    f"campaign config, or the prospect's reply — remove it or replace "
+                    f"with grounded fact"
+                )
+        for token in numbers:
+            norm = normalize_numeric(token)
+            if norm is None or not _numeric_grounded(norm[0], norm[1], corpus_numerics):
+                errors.append(
+                    f"slot '{slot_name}': number '{token}' has no exact match in the "
+                    f"grounding corpus — numbers are never fuzzy-matched"
+                )
+            elif norm[1] == "currency" and not _numeric_grounded(
+                norm[0], norm[1], trusted_numerics
+            ):
+                errors.append(
+                    f"slot '{slot_name}': currency amount '{token}' grounds only in "
+                    f"the prospect's reply — a draft may never echo a price back as "
+                    f"an offer"
+                )
+
+    # 1b. commitment terms — campaign config is the only license
+    joined = (" ".join(slots.values()) + " " + rendered_body).lower()
+    campaign_joined = " ".join(campaign_corpus).lower()
+    for term in COMMITMENT_TERMS:
+        if term in joined and term not in campaign_joined:
+            errors.append(
+                f"commitment term '{term}' is not in the campaign config — a reply "
+                f"may not introduce commitments the operator didn't write down"
+            )
+
+    # 2. banned phrases + em-dash spam
+    for phrase in BANNED_PHRASES:
+        if phrase in joined:
+            errors.append(f"banned phrase: '{phrase}'")
+    if "—" in joined or "–" in joined:
+        errors.append("em-dash/en-dash detected — rewrite without it")
+
+    # 3. length cap — replies stay short (⛔ Gate M4 default 120 words rendered)
+    body_words = len(rendered_body.split())
+    if body_words > max_words:
+        errors.append(f"reply is {body_words} words (max {max_words})")
+
+    # 4. reading grade
+    if rendered_body.strip():
+        grade = textstat.flesch_kincaid_grade(rendered_body)
         if grade > MAX_READING_GRADE:
             errors.append(
                 f"reading grade {grade:.1f} (max {MAX_READING_GRADE:.0f}) — use shorter words and sentences"

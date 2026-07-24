@@ -70,6 +70,11 @@ export default async function OverviewPage() {
           hint="Ready for human handoff"
         />
         <Metric
+          label="Meetings booked"
+          value={overview.booked}
+          hint="Confirmed by calendar webhook"
+        />
+        <Metric
           label="Copy blocked"
           value={overview.copywriter_rejections}
           hint="Validator rejected hallucinated slots"
