@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     reply_draft_max_words: int = 120
     reply_followup_weeks: int = 4
 
+    # Meeting booking (M4.3) — BYO Cal.com. Keyless-off: no webhook secret, no
+    # webhook processing (503); scheduling links in drafts work regardless.
+    # calcom_api_key reserved for future link management; verification only needs
+    # the webhook secret.
+    calcom_api_key: str = ""
+    calcom_webhook_secret: str = ""
+
     # Optional Twilio click-to-dial (M3.3) — BYO account; disabled unless all four are
     # set. Rings the operator first, then dials the lead (no robocalls to prospects).
     twilio_account_sid: str = ""

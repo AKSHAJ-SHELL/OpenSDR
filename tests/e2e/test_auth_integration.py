@@ -14,7 +14,9 @@ from craftsman.api.app import app
 # The only paths intentionally reachable without a key.
 #   /health   — liveness probes
 #   /u/{token} — RFC 8058 requires an unauthenticated one-click unsubscribe POST
-UNAUTH_ALLOWLIST = {"/health", "/u/{token}"}
+#   /meetings/webhooks/calcom — Cal.com can't hold an API key; gated by HMAC-SHA256
+#     over the raw body instead, and 503-off until CALCOM_WEBHOOK_SECRET is set
+UNAUTH_ALLOWLIST = {"/health", "/u/{token}", "/meetings/webhooks/calcom"}
 
 
 def _concrete(path: str) -> str:

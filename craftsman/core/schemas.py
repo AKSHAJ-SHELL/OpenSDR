@@ -140,6 +140,8 @@ class CampaignCreate(BaseModel):
     value_prop: str
     sender_persona: dict = Field(default_factory=dict)
     daily_cap: int = 50
+    scheduling_url: str | None = None
+    info_doc_url: str | None = None
     steps: list[int] = Field(
         default=[0, 3, 4],
         description="wait_days per step; first entry is days before opener (usually 0)",
@@ -153,6 +155,8 @@ class CampaignOut(BaseModel):
     daily_cap: int
     icp_description: str | None = None
     value_prop: str | None = None
+    scheduling_url: str | None = None
+    info_doc_url: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -268,6 +272,8 @@ class CampaignUpdate(BaseModel):
     value_prop: str | None = None
     sender_persona: dict | None = None
     daily_cap: int | None = Field(default=None, ge=1)
+    scheduling_url: str | None = None
+    info_doc_url: str | None = None
 
 
 class MailboxCreate(BaseModel):
@@ -372,6 +378,22 @@ class MessageOut(BaseModel):
     lead_email: str | None = None
     lead_name: str | None = None
     company_domain: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class MeetingOut(BaseModel):
+    id: uuid.UUID
+    enrollment_id: uuid.UUID | None
+    provider: str
+    provider_event_id: str
+    status: str
+    start_at: datetime | None
+    booked_at: datetime | None
+    created_at: datetime
+    lead_email: str | None = None
+    lead_name: str | None = None
+    campaign_name: str | None = None
 
     model_config = {"from_attributes": True}
 

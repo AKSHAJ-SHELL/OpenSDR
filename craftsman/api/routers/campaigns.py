@@ -158,6 +158,8 @@ async def create_campaign(payload: CampaignCreate, db: Session = Depends(get_db)
         value_prop=payload.value_prop,
         sender_persona=payload.sender_persona,
         daily_cap=payload.daily_cap,
+        scheduling_url=payload.scheduling_url,
+        info_doc_url=payload.info_doc_url,
     )
     embedder = get_embedder()
     campaign.icp_embedding = (await embedder.embed([payload.icp_description]))[0]

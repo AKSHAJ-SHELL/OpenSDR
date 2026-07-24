@@ -175,6 +175,11 @@ class Campaign(Base):
     )
     status: Mapped[str] = mapped_column(Text, default="draft")  # draft|active|paused|done
     icp_embedding: Mapped[list | None] = mapped_column(Vector(EMBEDDING_DIM))
+    # M4.3: static links embedded in reply drafts — campaign config, never LLM output.
+    # scheduling_url: the rep's booking page (Cal.com etc.); info_doc_url: the approved
+    # one-pager for "send me info" replies. Empty = the corresponding line is omitted.
+    scheduling_url: Mapped[str | None] = mapped_column(Text)
+    info_doc_url: Mapped[str | None] = mapped_column(Text)
 
     steps: Mapped[list["SequenceStep"]] = relationship(
         back_populates="campaign", order_by="SequenceStep.step_order"
@@ -321,6 +326,35 @@ class TouchTask(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     enrollment: Mapped[Enrollment] = relationship()
+
+
+class Meeting(Base):
+    """A booked meeting (M4.3, G8) — the funnel's terminal win, learned from a
+    signed calendar-provider webhook. UNIQUE(provider_event_id) makes webhook
+    redelivery an update, not a duplicate. No FK cascade per M0.4 doctrine;
+    erase_lead deletes these rows (attendee identity is person-linked)."""
+
+    __tablename__ = "meetings"
+    __table_args__ = (
+        UniqueConstraint("provider_event_id", name="uq_meeting_provider_event"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    enrollment_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("enrollments.id"), index=True
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )  # proposed|booked|completed|cancelled|no_show
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+    enrollment: Mapped[Enrollment | None] = relationship()
 
 
 class EscalationRule(Base):

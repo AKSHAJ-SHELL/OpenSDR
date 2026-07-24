@@ -501,17 +501,15 @@ def generate_reply_draft(self, inbound_message_id: str):
 
 
 def _reply_scheduling_line(campaign: Campaign) -> str:
-    """Static scheduling-link line for interested drafts — campaign config only,
-    never LLM content. Wired to campaigns.scheduling_url in M4.3; until then the
-    persona's calendly (already part of the signature convention) is NOT repeated
-    in the body, so this stays empty."""
-    url = getattr(campaign, "scheduling_url", None)
+    """Static scheduling-link line for interested drafts — campaign config
+    (campaigns.scheduling_url, M4.3), never LLM content."""
+    url = campaign.scheduling_url
     return f"If it is easier, grab any time here: {url}" if url else ""
 
 
 def _reply_info_line(campaign: Campaign) -> str:
     """Static one-pager line for info-objection drafts — campaign config only."""
-    url = getattr(campaign, "info_doc_url", None)
+    url = campaign.info_doc_url
     return f"Here is the short version: {url}" if url else ""
 
 

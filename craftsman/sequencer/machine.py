@@ -3,11 +3,16 @@
 States:
   queued | researching | ready | waiting | awaiting_human_touch | replied_interested |
   replied_objection | replied_not_now | ooo_rescheduled | bounced | unsubscribed |
-  finished_no_reply | error
+  finished_no_reply | meeting_booked | error
 
 `awaiting_human_touch` (M3.1): an assisted-channel step generated a validated task and
 is waiting for a human to perform the touch. Replies, bounces, and unsubscribes still
 route normally from it — the sequence is paused, not deaf.
+
+`meeting_booked` (M4.3): the funnel's terminal win, driven by a signed calendar
+webhook. Explicit pairs only (no wildcard): a booking may arrive from any live state
+OR from a replied_* terminal (the usual case — humans book after replying), which
+works because explicit pairs are checked before the terminal guard.
 """
 
 from enum import Enum
@@ -29,11 +34,12 @@ class Event(str, Enum):
     REPLY_OOO = "reply_ooo"
     BOUNCE = "bounce"
     UNSUBSCRIBE = "unsubscribe"
+    MEETING_BOOKED = "meeting_booked"  # M4.3: signed calendar webhook confirmed a booking
 
 
 TERMINAL_STATES = {
     "replied_interested", "replied_objection", "replied_not_now",
-    "bounced", "unsubscribed", "finished_no_reply", "error",
+    "bounced", "unsubscribed", "finished_no_reply", "meeting_booked", "error",
 }
 
 # (state, event) -> new_state.  "*" state matches any non-terminal state.
@@ -64,6 +70,15 @@ TRANSITIONS: dict[tuple[str, Event], str] = {
     ("awaiting_human_touch", Event.REPLY_OOO): "ooo_rescheduled",
     ("*", Event.BOUNCE): "bounced",
     ("*", Event.UNSUBSCRIBE): "unsubscribed",
+    # M4.3 — a booking beats any in-flight state, and legitimately exits the
+    # replied_* terminals (explicit pairs bypass the terminal guard by design).
+    ("replied_interested", Event.MEETING_BOOKED): "meeting_booked",
+    ("replied_objection", Event.MEETING_BOOKED): "meeting_booked",
+    ("replied_not_now", Event.MEETING_BOOKED): "meeting_booked",
+    ("waiting", Event.MEETING_BOOKED): "meeting_booked",
+    ("awaiting_human_touch", Event.MEETING_BOOKED): "meeting_booked",
+    ("ooo_rescheduled", Event.MEETING_BOOKED): "meeting_booked",
+    ("ready", Event.MEETING_BOOKED): "meeting_booked",
 }
 
 

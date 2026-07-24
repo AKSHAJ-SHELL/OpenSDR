@@ -17,6 +17,7 @@ from craftsman.core.models import (
     Enrollment,
     Lead,
     LeadEnrichmentRecord,
+    Meeting,
     Message,
     ReplyDraft,
     ReviewQueueItem,
@@ -149,6 +150,11 @@ def erase_lead(db: Session, lead: Lead) -> None:
             select(ReplyDraft).where(ReplyDraft.enrollment_id.in_(enrollment_ids))
         ).all():
             db.delete(draft)
+        # meetings link the person's booked events (M4.3) — person-linked, erased
+        for meeting in db.scalars(
+            select(Meeting).where(Meeting.enrollment_id.in_(enrollment_ids))
+        ).all():
+            db.delete(meeting)
         for msg in db.scalars(
             select(Message).where(Message.enrollment_id.in_(enrollment_ids))
         ).all():

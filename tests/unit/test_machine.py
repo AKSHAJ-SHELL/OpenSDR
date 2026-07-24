@@ -60,7 +60,19 @@ def test_research_failure_goes_to_error():
 
 
 def test_terminal_states_are_closed():
+    """Terminal states accept no events — with exactly one carve-out (M4.3):
+    replied_* → MEETING_BOOKED, because humans book meetings after replying and
+    the booking is the funnel's real terminal. The carve-out is enumerated here
+    so any new terminal exit breaks this test by construction."""
+    allowed_terminal_exits = {
+        ("replied_interested", Event.MEETING_BOOKED),
+        ("replied_objection", Event.MEETING_BOOKED),
+        ("replied_not_now", Event.MEETING_BOOKED),
+    }
     for ts in TERMINAL_STATES:
         for event in Event:
+            if (ts, event) in allowed_terminal_exits:
+                assert next_state(ts, event) == "meeting_booked"
+                continue
             with pytest.raises(InvalidTransition):
                 next_state(ts, event)

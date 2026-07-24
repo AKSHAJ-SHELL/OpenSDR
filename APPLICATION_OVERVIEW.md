@@ -484,6 +484,8 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Reply draft idempotency | one draft per inbound message; unique `uq_reply_draft_inbound`, claim-before-LLM | `workers/tasks.py generate_reply_draft` |
 | Reply bandit isolation | drafts/sent replies never update copy posteriors (`bandit_outcome` NULL); acceptance rate is the metric | `sender/reply.py`; `/analytics/overview` |
 | Escalation rules | defaults always active (legal/GDPR tripwire: suppress + urgent notify + never a draft; confident interested → Slack ping); DB rules ADD via union — no rule can shadow the tripwire | `inbox/escalation.py`; `/campaigns/{id}/escalation-rules` (M4.2) |
+| `CALCOM_WEBHOOK_SECRET` / `CALCOM_API_KEY` | "" (meeting webhooks off — 503; scheduling links in drafts work regardless). Webhook is HMAC-SHA256-gated, the one deliberate unauthenticated route besides /health and /u/{token} | config; `meetings/providers.py`, `/meetings/webhooks/calcom` (M4.3) |
+| Campaign booking links | `campaigns.scheduling_url` (interested drafts) / `info_doc_url` ("send me info" drafts) — static lines, never LLM output; empty = line omitted | migration `0013`; campaign builder (M4.3) |
 
 ---
 
