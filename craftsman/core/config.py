@@ -85,6 +85,23 @@ class Settings(BaseSettings):
     twilio_from_number: str = ""
     twilio_operator_number: str = ""
 
+    # Multi-tenancy (M5.1, ⛔ Gate M5 Q1a). The overlay list suppresses across
+    # ALL orgs when enabled (shared-infra hosts); org lists can never shadow it.
+    # `unsubscribe_propagate_global` additionally writes each unsubscribe to the
+    # overlay — off by default: it makes one tenant's unsubscribe affect all.
+    global_suppression_enabled: bool = False
+    unsubscribe_propagate_global: bool = False
+
+    # OIDC SSO (M5.1b, generic — Google/Okta/Entra docs in README). Empty
+    # discovery URL = SSO off; password login always works as break-glass.
+    oidc_discovery_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = "http://localhost:8000/auth/oidc/callback"
+    # JIT provisioning of unknown-but-authenticated subjects, default OFF —
+    # unknown subjects are rejected until an owner invites them (role: viewer).
+    oidc_auto_provision: bool = False
+
     # Secrets
     craftsman_secret_key: str = ""
 

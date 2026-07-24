@@ -44,9 +44,13 @@ class CraftsmanCollector:
 
         from craftsman.core.db import session_scope
         from craftsman.core.models import Enrollment, Lead, Message, ReviewQueueItem
+        from craftsman.core.tenancy import unscoped_context
 
         try:
-            with session_scope() as db:
+            # /metrics is infrastructure-wide by design (Prometheus scrapes the
+            # install, not a tenant): counts aggregate across orgs and carry no
+            # row contents. Justified unscoped read (M5.1).
+            with unscoped_context(), session_scope() as db:
                 enrollments = GaugeMetricFamily(
                     "craftsman_enrollments", "Enrollments by state", labels=["state"]
                 )

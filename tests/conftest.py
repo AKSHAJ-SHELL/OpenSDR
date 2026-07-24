@@ -37,26 +37,58 @@ def engine():
     if not _ensure_test_db():
         pytest.skip("Postgres not reachable — skipping integration tests")
     eng = create_engine(TEST_DB_URL)
-    from craftsman.core.models import Base
+    from craftsman.core.models import Base, Org
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, unscoped_context
 
     with eng.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
     Base.metadata.drop_all(eng)
     Base.metadata.create_all(eng)
+    # M5.1: the default org — the db fixture enters its context, so every
+    # pre-tenancy test keeps working unchanged (exactly the migration-backfill
+    # world a single-tenant self-hoster lives in)
+    with unscoped_context():
+        s = sessionmaker(bind=eng)()
+        s.add(Org(id=DEFAULT_ORG_ID, name="Default", slug="default"))
+        s.commit()
+        s.close()
     yield eng
     eng.dispose()
 
 
 @pytest.fixture()
 def db(engine):
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, org_context
+
     connection = engine.connect()
     transaction = connection.begin()
     session = sessionmaker(bind=connection)()
-    yield session
+    with org_context(DEFAULT_ORG_ID):
+        yield session
     session.close()
     transaction.rollback()
     connection.close()
+
+
+@pytest.fixture(autouse=True)
+def _default_org_context():
+    """Every test runs inside the default org (M5.1) — the exact world the 0016
+    backfill leaves a single-tenant self-hoster in. Cross-tenant tests enter
+    other orgs (or tenancy.no_org_context) explicitly; nesting overrides this.
+    Threads and the TestClient portal do NOT inherit it — worker threads enter
+    their own context like real Celery tasks, and API requests get theirs from
+    the auth dependency, which is the production path under test."""
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, org_context
+
+    with org_context(DEFAULT_ORG_ID):
+        yield
+
+
+@pytest.fixture()
+def default_org_ctx(_default_org_context):
+    """Alias kept for tests that name the dependency explicitly."""
+    yield
 
 
 @pytest.fixture()

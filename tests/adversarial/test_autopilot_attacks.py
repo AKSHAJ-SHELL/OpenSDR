@@ -153,7 +153,7 @@ def test_thread_invariant_across_many_replies(db, wired):
 # draft still works — the reservation binds autonomy only.
 # (Raw engine sessions with real commits, like test_send_concurrency — the
 # claim's IntegrityError rollback cannot run inside the transactional fixture.)
-def test_thread_invariant_survives_concurrent_claim_race(engine, monkeypatch):
+def test_thread_invariant_survives_concurrent_claim_race(engine, monkeypatch, default_org_ctx):
     import asyncio
 
     from sqlalchemy.orm import Session

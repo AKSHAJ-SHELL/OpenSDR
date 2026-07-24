@@ -10,11 +10,13 @@ import secrets
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from craftsman.core.config import get_settings
 from craftsman.core.models import (
     AuditLog,
     Company,
     DryRunItem,
     Enrollment,
+    GlobalSuppressionEntry,
     Lead,
     LeadEnrichmentRecord,
     Meeting,
@@ -34,13 +36,34 @@ EU_TLDS = {
 
 
 def is_suppressed(db: Session, email: str) -> bool:
-    return db.get(SuppressionEntry, email.lower()) is not None
+    """Org do-not-contact, UNION the optional cross-org overlay (⛔ Gate M5 Q1a).
+
+    The org check is tenancy-scoped automatically; the overlay is additive and
+    consulted only as a boolean, so no tenant learns anything about another."""
+    email = email.lower()
+    if db.scalar(select(SuppressionEntry.id).where(SuppressionEntry.email == email)):
+        return True
+    settings = get_settings()
+    if settings.global_suppression_enabled:
+        return db.get(GlobalSuppressionEntry, email) is not None
+    return False
 
 
 def suppress(db: Session, email: str, reason: str) -> None:
     email = email.lower()
-    if db.get(SuppressionEntry, email) is None:
+    if not db.scalar(select(SuppressionEntry.id).where(SuppressionEntry.email == email)):
         db.add(SuppressionEntry(email=email, reason=reason))
+    settings = get_settings()
+    if (
+        settings.global_suppression_enabled
+        and settings.unsubscribe_propagate_global
+        and reason in ("unsubscribe", "gdpr")
+        and db.get(GlobalSuppressionEntry, email) is None
+    ):
+        # opt-in overlay propagation: this person is done hearing from ANY org
+        # on this install; only consent-shaped reasons propagate (never bounce
+        # or one org's manual list management)
+        db.add(GlobalSuppressionEntry(email=email, reason=reason))
     lead = db.scalar(select(Lead).where(Lead.email == email))
     if lead is not None:
         lead.status = "suppressed"

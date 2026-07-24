@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -18,6 +19,7 @@ from craftsman.core.models import (
     Variant,
 )
 from craftsman.core.schemas import ResearchBrief
+from craftsman.core.tenancy import org_context, unscoped_context
 from craftsman.llm.client import get_llm
 from craftsman.workers.celery_app import app
 
@@ -28,6 +30,34 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+@contextmanager
+def _org_task_scope(model, entity_id):
+    """session_scope + tenancy bootstrap for an id-addressed task (M5.1).
+
+    The id came from our own queue, so the row load is a justified unscoped
+    read; the row's org is entered before anything else runs, scoping every
+    later query in the task body. Yields (db, row); row is None when the id
+    no longer resolves (erased, rolled back) — the tasks' existing
+    early-return contract."""
+    with session_scope() as db:
+        with unscoped_context():
+            row = db.get(model, entity_id)
+        if row is None:
+            yield db, None
+        else:
+            with org_context(row.org_id):
+                yield db, row
+
+
+def _org_ids(db):
+    """All org ids — for beat sweeps, which iterate tenants one org at a time
+    so every row they create is stamped into the org it belongs to (M5.1)."""
+    from craftsman.core.models import Org
+
+    with unscoped_context():
+        return list(db.scalars(select(Org.id)))
+
+
 # ------------------------------------------------------------------ sequencer
 
 
@@ -36,12 +66,15 @@ def sequencer_tick():
     from craftsman.sequencer.tick import tick
 
     with session_scope() as db:
-        handled = tick(
-            db,
-            enqueue_research=lambda eid: research_enrollment.delay(eid),
-            enqueue_send=lambda eid: generate_and_send.delay(eid),
-            enqueue_task=lambda eid: generate_touch_task.delay(eid),
-        )
+        handled = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                handled += tick(
+                    db,
+                    enqueue_research=lambda eid: research_enrollment.delay(eid),
+                    enqueue_send=lambda eid: generate_and_send.delay(eid),
+                    enqueue_task=lambda eid: generate_touch_task.delay(eid),
+                )
     log.info("tick handled %d enrollments", handled)
     return handled
 
@@ -57,8 +90,7 @@ def research_enrollment(self, enrollment_id: str):
 
     from craftsman.core.logging import bind_log_context
 
-    with session_scope() as db:
-        enrollment = db.get(Enrollment, enrollment_id)
+    with _org_task_scope(Enrollment, enrollment_id) as (db, enrollment):
         if enrollment is None or enrollment.state != "researching":
             return
         lead = db.get(Lead, enrollment.lead_id)
@@ -99,8 +131,7 @@ def generate_and_send(self, enrollment_id: str):
 
     from craftsman.core.logging import bind_log_context
 
-    with session_scope() as db:
-        enrollment = db.get(Enrollment, enrollment_id)
+    with _org_task_scope(Enrollment, enrollment_id) as (db, enrollment):
         if enrollment is None or enrollment.state != "ready":
             return
         lead = db.get(Lead, enrollment.lead_id)
@@ -276,8 +307,7 @@ def generate_touch_task(self, enrollment_id: str):
     from craftsman.sequencer.scheduling import add_business_days
     from craftsman.sequencer.tick import apply_event
 
-    with session_scope() as db:
-        enrollment = db.get(Enrollment, enrollment_id)
+    with _org_task_scope(Enrollment, enrollment_id) as (db, enrollment):
         if enrollment is None or enrollment.state != "ready":
             return
         lead = db.get(Lead, enrollment.lead_id)
@@ -407,8 +437,7 @@ def generate_reply_draft(self, inbound_message_id: str):
     from craftsman.copywriter.reply_fill import generate_reply_copy
     from craftsman.core.models import ReplyDraft, ReviewQueueItem
 
-    with session_scope() as db:
-        inbound = db.get(Message, inbound_message_id)
+    with _org_task_scope(Message, inbound_message_id) as (db, inbound):
         if inbound is None or inbound.direction != "inbound":
             return
         if inbound.classification not in ("interested", "objection"):
@@ -616,8 +645,7 @@ def run_dry_run(dry_run_id: str):
     from craftsman.scoring.icp import icp_score, lead_text
     from craftsman.sender.smtp import PreparedEmail, build_dry_run_email, deliver_to_mailpit
 
-    with session_scope() as db:
-        run = db.get(DryRun, dry_run_id)
+    with _org_task_scope(DryRun, dry_run_id) as (db, run):
         if run is None or run.status != "running":
             return
         campaign = db.get(Campaign, run.campaign_id)
@@ -726,8 +754,7 @@ def enrich_lead(lead_id: str):
     )
     from craftsman.ingest.verify import verify_email
 
-    with session_scope() as db:
-        lead = db.get(Lead, lead_id)
+    with _org_task_scope(Lead, lead_id) as (db, lead):
         if lead is None:
             return
         if verify_email(lead.email):
@@ -772,7 +799,9 @@ def collect_signals():
 
     notify = _slack_notifier(settings)
     total = 0
-    with session_scope() as db:
+
+    def _collect_for_current_org(db) -> int:
+        n = 0
         for collector in collectors:
             try:
                 collected = _run(collector.collect(db))
@@ -786,7 +815,13 @@ def collect_signals():
                 db.add(signal)
                 db.flush()
                 evaluate_rules(db, signal, settings.icp_threshold, notify=notify)
-                total += 1
+                n += 1
+        return n
+
+    with session_scope() as db:
+        for oid in _org_ids(db):
+            with org_context(oid):
+                total += _collect_for_current_org(db)
     log.info("collect_signals recorded %d new signals", total)
     return total
 
@@ -821,28 +856,30 @@ def poll_inboxes():
     settings = get_settings()
     enqueue_draft = lambda message_id: generate_reply_draft.delay(str(message_id))  # noqa: E731
     with session_scope() as db:
-        mailboxes = db.scalars(
-            select(Mailbox).where(
-                Mailbox.imap_host.isnot(None),
-                Mailbox.imap_host != "",
-            )
-        ).all()
-        for mailbox in mailboxes:
-            for inbound in fetch_unseen(mailbox):
-                _run(handle_inbound(
-                    db, llm, inbound, mailbox_id=mailbox.id, enqueue_draft=enqueue_draft
-                ))
+        for oid in _org_ids(db):
+            with org_context(oid):
+                mailboxes = db.scalars(
+                    select(Mailbox).where(
+                        Mailbox.imap_host.isnot(None),
+                        Mailbox.imap_host != "",
+                    )
+                ).all()
+                for mailbox in mailboxes:
+                    for inbound in fetch_unseen(mailbox):
+                        _run(handle_inbound(
+                            db, llm, inbound, mailbox_id=mailbox.id, enqueue_draft=enqueue_draft
+                        ))
 
-        if settings.mailpit_url:
-            for inbound in fetch_mailpit(db, settings.mailpit_url):
-                # attribute to first healthy mailbox when present
-                box_id = mailboxes[0].id if mailboxes else None
-                if box_id is None:
-                    any_box = db.scalars(select(Mailbox).limit(1)).first()
-                    box_id = any_box.id if any_box else None
-                _run(handle_inbound(
-                    db, llm, inbound, mailbox_id=box_id, enqueue_draft=enqueue_draft
-                ))
+                if settings.mailpit_url:
+                    for inbound in fetch_mailpit(db, settings.mailpit_url):
+                        # attribute to first healthy mailbox when present
+                        box_id = mailboxes[0].id if mailboxes else None
+                        if box_id is None:
+                            any_box = db.scalars(select(Mailbox).limit(1)).first()
+                            box_id = any_box.id if any_box else None
+                        _run(handle_inbound(
+                            db, llm, inbound, mailbox_id=box_id, enqueue_draft=enqueue_draft
+                        ))
 
 
 # ------------------------------------------------------------------ settle + housekeeping
@@ -853,7 +890,11 @@ def settle_bandit():
     from craftsman.bandit.settle import settle_expired
 
     with session_scope() as db:
-        return settle_expired(db)
+        total = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                total += settle_expired(db)
+        return total
 
 
 @app.task
@@ -863,9 +904,12 @@ def redrive_unsent():
     from craftsman.sequencer.redrive import redrive_unsent_claims
 
     with session_scope() as db:
-        n = redrive_unsent_claims(
-            db, after_minutes=get_settings().redrive_unsent_after_minutes
-        )
+        n = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                n += redrive_unsent_claims(
+                    db, after_minutes=get_settings().redrive_unsent_after_minutes
+                )
     if n:
         log.info("redrive_unsent swept %d stuck claim(s)", n)
     return n
@@ -878,13 +922,15 @@ def reset_daily_counters():
     from craftsman.core.models import Campaign
 
     with session_scope() as db:
-        for mailbox in db.scalars(select(Mailbox)).all():
-            mailbox.sent_today = 0
-            mailbox.hard_bounces_today = 0
-            if mailbox.health == "degraded":
-                mailbox.health = "ok"
-            if mailbox.warmup_stage < 4:
-                mailbox.warmup_stage += 1
-            db.add(mailbox)
-        # zero the per-campaign send counters used by the atomic cap reserve
-        db.execute(update(Campaign).values(sent_today=0))
+        for oid in _org_ids(db):
+            with org_context(oid):
+                for mailbox in db.scalars(select(Mailbox)).all():
+                    mailbox.sent_today = 0
+                    mailbox.hard_bounces_today = 0
+                    if mailbox.health == "degraded":
+                        mailbox.health = "ok"
+                    if mailbox.warmup_stage < 4:
+                        mailbox.warmup_stage += 1
+                    db.add(mailbox)
+                # zero the per-campaign send counters used by the atomic cap reserve
+                db.execute(update(Campaign).values(sent_today=0))

@@ -162,7 +162,7 @@ def test_zero_rows_sweep_and_audit_anonymized(db):
 
     # kept: the suppression entry — it IS the do-not-contact record
     assert is_suppressed(db, email)
-    entry = db.get(SuppressionEntry, email)
+    entry = db.scalar(select(SuppressionEntry).where(SuppressionEntry.email == email))
     assert entry is not None and entry.reason == "gdpr"
 
 
