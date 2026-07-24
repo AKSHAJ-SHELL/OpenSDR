@@ -15,7 +15,7 @@ pattern from the SSRF guard) so parser tests never touch the network.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import dns.exception
 import dns.resolver

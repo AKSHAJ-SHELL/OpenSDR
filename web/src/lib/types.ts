@@ -291,6 +291,54 @@ export type DeliverabilityReport = {
   warmup: Warmup;
 };
 
+export type BlocklistVerdict = {
+  zone: string;
+  status: "listed" | "clear" | "error";
+  listed_ips: string[];
+};
+
+export type DomainStats7d = {
+  sends: number;
+  hard_bounces: number;
+  spam_bounces: number;
+  bounce_rate: number;
+  complaint_rate: number;
+};
+
+export type DomainHealth = {
+  domain: string;
+  score: number;
+  components: Record<string, number>;
+  mailboxes: number;
+  paused_mailboxes: number;
+  spf: DnsRecord;
+  dmarc: DmarcRecord;
+  dkim: DkimRecord;
+  blocklists: BlocklistVerdict[];
+  stats_7d: DomainStats7d;
+};
+
+export type PlacementVerdict = "pending" | "inbox" | "spam" | "missing";
+
+export type PlacementResult = {
+  id: string;
+  seed_email: string;
+  verdict: PlacementVerdict;
+  delivered: boolean;
+  error: string | null;
+  marked_at: string | null;
+};
+
+export type PlacementRun = {
+  id: string;
+  campaign_id: string;
+  status: "running" | "complete" | "failed";
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+  results: PlacementResult[];
+};
+
 export type ArmPosterior = {
   variant_id: string;
   name: string | null;
@@ -358,6 +406,22 @@ export type Task = {
   campaign_name: string | null;
   brief_highlights: string[];
   dialer_available: boolean;
+};
+
+// ---------------------------------------------------------------- users & RBAC (M5.1b)
+
+export type Role = "owner" | "operator" | "viewer";
+
+export type UserOut = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  role: Role;
+  has_password: boolean;
+  sso_linked: boolean;
+  disabled_at: string | null;
+  last_login_at: string | null;
+  created_at: string | null;
 };
 
 export type TimelineItem = {

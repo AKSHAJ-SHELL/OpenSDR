@@ -427,8 +427,10 @@ change these thresholds to make a test pass** — they encode product behavior.
 
 | Knob | Default | Where |
 |---|---|---|
-| `LLM_PROVIDER` | anthropic (mock in tests) | config |
+| `LLM_PROVIDER` | anthropic (mock in tests) — `anthropic \| openai \| ollama \| mock` | config |
 | `anthropic_model` | `claude-sonnet-4-6` | config |
+| `openai_model` / `openai_base_url` | `gpt-5-mini` / `https://api.openai.com/v1` (any OpenAI-compatible endpoint) | config |
+| `ollama_model` / `ollama_base_url` | `qwen2.5:14b` / `http://localhost:11434` | config |
 | `icp_threshold` | 0.55 | config |
 | ICP weights — no signals | `icp_cosine_weight` 0.7 / `icp_rule_weight` 0.3 | config |
 | ICP weights — with signals ⛔ | `icp_signal_cosine_weight` 0.6 / `icp_signal_rule_weight` 0.25 / `icp_signal_weight` 0.15 | config (M2.3; default set at ⛔ Gate M2 — 'renormalized': no-signal leads keep 0.7/0.3) |
@@ -488,7 +490,19 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Campaign booking links | `campaigns.scheduling_url` (interested drafts) / `info_doc_url` ("send me info" drafts) — static lines, never LLM output; empty = line omitted | migration `0013`; campaign builder (M4.3) |
 | `autopilot_min_confidence` ⛔ | 0.9 — below this Guarded Autopilot never fires | config (⛔ Gate M4 Option B) |
 | Autopilot enable/disable | per-campaign `autopilot_enabled` (default false, migration `0014`); enable = **admin** scope (deliberate friction), disable = operate (instant kill switch); both audit-logged | `/campaigns/{id}/autopilot/*` (M4.4) |
-| Autopilot invariants (not knobs) | ≤ 1 auto-reply per thread ever (reply-to-auto-reply always escalates); only the 3 deterministic skeletons; validator gates apply unchanged; escalation `block_autopilot` vetoes; lead-local business hours | `inbox/autopilot.py` — `MAX_AUTO_REPLIES_PER_THREAD` is a constant |
+| Autopilot invariants (not knobs) | ≤ 1 auto-reply per thread ever (reply-to-auto-reply always escalates); only the 3 deterministic skeletons; validator gates apply unchanged; escalation `block_autopilot` vetoes; lead-local business hours | `inbox/autopilot.py` — `MAX_AUTO_REPLIES_PER_THREAD` is a constant; **structural since M5**: the auto dispatch claim stamps `auto_sent` before I/O under partial unique index `uq_auto_reply_per_thread` (migration `0015`, F-05 in findings/12), so racing workers cannot double-send |
+| `blocklist_zones` | `zen.spamhaus.org,bl.spamcop.net` — DNSBL zones for the per-domain health check; pure DNS (no HTTP), deliberately SSRF-guard-exempt | config; `deliverability/health.py`, `GET /deliverability/domains` (M5.3) |
+| `domain_pause_bounce_threshold` ⛔ | 5 hard+spam bounces per sending domain per day → auto-pause every mailbox on that domain (audit event `domain_auto_paused` + urgent notify); 0 disables; un-pause is an explicit `PATCH /mailboxes` health edit | config (⛔ Gate M5 approved); `deliverability/health.py` (M5.3) |
+| `domain_min_interval_s` | 0 (domain-level token bucket **off**) — when set, a per-domain minimum send interval wraps the per-mailbox 45–90s bucket on both the campaign and reply send paths | config; `sender/limiter.py acquire_domain_slot` (M5.3) |
+| `webhook_max_attempts` | 8 — outbound webhook delivery tries per event (exponential backoff 30s→1h); exhaustion marks the delivery `failed` and dead-letters it. Event registry is fixed (`webhooks/events.py`); endpoint URLs are https-only through the SSRF guard at registration AND delivery time | config; `workers/tasks.py deliver_webhook`, `/webhooks` (M5.4) |
+| `audit_retention_days` | 0 (keep forever) — when >0, the daily reset sweep deletes each org's `audit_log` rows older than the cutoff (per-org, inside the tenancy boundary). Export first: `GET /audit/export` (admin, NDJSON, `?since=`) | config; `workers/tasks.py reset_daily_counters`, `api/routers/ops.py` (M5.4) |
+| Tenancy enforcement (not a knob) | every tenant table is `OrgScoped`; the session layer filters SELECTs, appends org predicates to UPDATE/DELETE, stamps inserts at construction, and refuses cross-org writes/moves — **fail-closed**: no org context ⇒ `TenancyError`. `unscoped_context()` is the single grep-able escape hatch (justified uses listed in the module docstring) | `craftsman/core/tenancy.py`; migration `0016` backfills everything into the default org (M5.1a) |
+| `GLOBAL_SUPPRESSION_ENABLED` / `UNSUBSCRIBE_PROPAGATE_GLOBAL` ⛔ | false / false — suppression is per-org (⛔ Gate M5 Q1a); the overlay list (`global_suppression`) suppresses additively across ALL orgs when enabled; propagation writes each unsubscribe/gdpr (never bounce/manual) to the overlay | config; `compliance/suppression.py` (M5.1a) |
+| Org quotas | per-org DATA, not knobs: `daily_send_cap` (atomic reserve beside the campaign cap, cold sends only), `max_mailboxes`, `enrichment_daily_budget` (exhaustion ⇒ verify-only). NULL = unlimited; host-set via `python -m craftsman.manage_org`; tenant-visible read-only at `GET /org` | `orgs` table; `sender/smtp.py reserve_org_slot`, `ingest/enrichment.py reserve_enrichment_calls` (M5.1c) |
+| Roles → scopes | `owner→admin`, `operator→operate`, `viewer→read` — fixed data; dashboard proxy down-enforces via `GET /auth/route-scopes`; last-active-owner demote/disable is refused (409) | `core/rbac.py`, `/users` (M5.1b) |
+| `OIDC_DISCOVERY_URL` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | "" (SSO off — login/callback 503; password login always works). Code flow in the API; signed state + nonce + full id_token validation; browser carries only a 60s one-time login code (Redis jti). `/auth/oidc/login\|callback` join the unauth allowlist | config; `sso/oidc.py`, `api/routers/sso.py` (M5.1b) |
+| `OIDC_AUTO_PROVISION` | false — unknown-but-authenticated subjects are rejected until an owner invites them; when on, JIT-provision as `viewer` into the default org. Email-match linking requires a VERIFIED email matching exactly one unlinked user | config (M5.1b) |
+| `OIDC_REDIRECT_URL` / `DASHBOARD_BASE_URL` | `http://localhost:8000/auth/oidc/callback` / `http://localhost:3000` — the IdP return address and where the callback sends the browser | config (M5.1b) |
 
 ---
 

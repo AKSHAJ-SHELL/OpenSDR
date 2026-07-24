@@ -9,14 +9,19 @@ from craftsman.api.auth import require_scope
 from craftsman.api.routers import (
     analytics,
     campaigns,
+    deliverability,
     inbox,
     keys,
     leads,
     mailboxes,
     meetings,
     ops,
+    org,
+    sso,
     tasks,
     unsubscribe,
+    users,
+    webhooks,
 )
 
 
@@ -58,12 +63,17 @@ app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(inbox.router)
 app.include_router(mailboxes.router)
+app.include_router(deliverability.router)
 app.include_router(analytics.router)
 app.include_router(meetings.router)
 app.include_router(keys.router)
 app.include_router(ops.router)
 app.include_router(tasks.router)
 app.include_router(unsubscribe.router)
+app.include_router(users.router)
+app.include_router(sso.router)
+app.include_router(org.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(require_scope("read"))])

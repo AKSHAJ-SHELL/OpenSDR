@@ -8,7 +8,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE, verifyToken } from "@/lib/session";
 
-const PUBLIC_PATHS = new Set(["/login"]);
+// `/auth/sso` is the SSO landing: the browser arrives here *without* a session
+// (the route handler mints one), so the gate must let it through.
+const PUBLIC_PATHS = new Set(["/login", "/auth/sso"]);
 
 export default function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

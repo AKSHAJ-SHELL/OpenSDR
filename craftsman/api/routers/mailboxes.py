@@ -33,6 +33,19 @@ router = APIRouter(prefix="/mailboxes", tags=["mailboxes"])
 
 @router.post("", response_model=MailboxOut, dependencies=[Depends(require_scope("admin"))])
 def add_mailbox(payload: MailboxCreate, db: Session = Depends(get_db)):
+    # per-org mailbox quota (M5.1c): NULL = unlimited (self-hoster default)
+    from sqlalchemy import func
+
+    from craftsman.core.models import Org
+    from craftsman.core.tenancy import require_org_id
+
+    org = db.get(Org, require_org_id())
+    if org is not None and org.max_mailboxes is not None:
+        count = db.scalar(select(func.count(Mailbox.id))) or 0
+        if count >= org.max_mailboxes:
+            raise HTTPException(
+                409, f"org mailbox quota reached ({org.max_mailboxes})"
+            )
     imap_host = (payload.imap_host or "").strip() or None
     box = Mailbox(
         email=payload.email,

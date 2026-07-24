@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -18,6 +19,7 @@ from craftsman.core.models import (
     Variant,
 )
 from craftsman.core.schemas import ResearchBrief
+from craftsman.core.tenancy import org_context, unscoped_context
 from craftsman.llm.client import get_llm
 from craftsman.workers.celery_app import app
 
@@ -28,6 +30,34 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+@contextmanager
+def _org_task_scope(model, entity_id):
+    """session_scope + tenancy bootstrap for an id-addressed task (M5.1).
+
+    The id came from our own queue, so the row load is a justified unscoped
+    read; the row's org is entered before anything else runs, scoping every
+    later query in the task body. Yields (db, row); row is None when the id
+    no longer resolves (erased, rolled back) — the tasks' existing
+    early-return contract."""
+    with session_scope() as db:
+        with unscoped_context():
+            row = db.get(model, entity_id)
+        if row is None:
+            yield db, None
+        else:
+            with org_context(row.org_id):
+                yield db, row
+
+
+def _org_ids(db):
+    """All org ids — for beat sweeps, which iterate tenants one org at a time
+    so every row they create is stamped into the org it belongs to (M5.1)."""
+    from craftsman.core.models import Org
+
+    with unscoped_context():
+        return list(db.scalars(select(Org.id)))
+
+
 # ------------------------------------------------------------------ sequencer
 
 
@@ -36,12 +66,15 @@ def sequencer_tick():
     from craftsman.sequencer.tick import tick
 
     with session_scope() as db:
-        handled = tick(
-            db,
-            enqueue_research=lambda eid: research_enrollment.delay(eid),
-            enqueue_send=lambda eid: generate_and_send.delay(eid),
-            enqueue_task=lambda eid: generate_touch_task.delay(eid),
-        )
+        handled = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                handled += tick(
+                    db,
+                    enqueue_research=lambda eid: research_enrollment.delay(eid),
+                    enqueue_send=lambda eid: generate_and_send.delay(eid),
+                    enqueue_task=lambda eid: generate_touch_task.delay(eid),
+                )
     log.info("tick handled %d enrollments", handled)
     return handled
 
@@ -57,8 +90,7 @@ def research_enrollment(self, enrollment_id: str):
 
     from craftsman.core.logging import bind_log_context
 
-    with session_scope() as db:
-        enrollment = db.get(Enrollment, enrollment_id)
+    with _org_task_scope(Enrollment, enrollment_id) as (db, enrollment):
         if enrollment is None or enrollment.state != "researching":
             return
         lead = db.get(Lead, enrollment.lead_id)
@@ -91,7 +123,9 @@ def generate_and_send(self, enrollment_id: str):
         deliver,
         last_outbound_in_thread,
         release_campaign_slot,
+        release_org_slot,
         reserve_campaign_slot,
+        reserve_org_slot,
         run_presend_checks,
     )
     from craftsman.sequencer.machine import Event
@@ -99,8 +133,7 @@ def generate_and_send(self, enrollment_id: str):
 
     from craftsman.core.logging import bind_log_context
 
-    with session_scope() as db:
-        enrollment = db.get(Enrollment, enrollment_id)
+    with _org_task_scope(Enrollment, enrollment_id) as (db, enrollment):
         if enrollment is None or enrollment.state != "ready":
             return
         lead = db.get(Lead, enrollment.lead_id)
@@ -180,12 +213,19 @@ def generate_and_send(self, enrollment_id: str):
             return
 
         campaign_id = campaign.id
+        org_id = campaign.org_id
 
         # per-campaign daily cap: atomic reserve, committed immediately so the row lock
         # is not held across the SMTP send. Concurrent workers can't collectively exceed.
         if not reserve_campaign_slot(db, campaign):
             record_rejection("campaign_daily_cap")
             raise self.retry(countdown=3600)  # cap reached; resets at midnight
+        # per-org daily cap (M5.1c): a second atomic reserve; NULL = unlimited
+        if not reserve_org_slot(db, org_id):
+            release_campaign_slot(db, campaign_id)
+            db.commit()
+            record_rejection("org_daily_cap")
+            raise self.retry(countdown=3600)
         db.commit()
 
         prev = last_outbound_in_thread(db, enrollment.id)
@@ -218,7 +258,8 @@ def generate_and_send(self, enrollment_id: str):
             db.flush()
         except IntegrityError:
             db.rollback()  # this step was already sent by a prior attempt
-            release_campaign_slot(db, campaign_id)  # give back the slot we just reserved
+            release_campaign_slot(db, campaign_id)  # give back the slots we just reserved
+            release_org_slot(db, org_id)
             db.commit()
             log.info("duplicate send suppressed: enrollment %s step %s", enrollment_id, step_order)
             return
@@ -237,6 +278,7 @@ def generate_and_send(self, enrollment_id: str):
             # slot so the retry re-sends cleanly. (Only a hard crash leaves a stuck claim.)
             db.delete(claim)
             release_campaign_slot(db, campaign_id)
+            release_org_slot(db, org_id)
             db.commit()
             raise self.retry(countdown=60)
 
@@ -246,6 +288,10 @@ def generate_and_send(self, enrollment_id: str):
         db.add(claim)
         mailbox.sent_today += 1
         db.add(mailbox)
+        from craftsman.deliverability.health import record_domain_send
+        from craftsman.ingest.verify import domain_of
+
+        record_domain_send(db, domain_of(mailbox.email))  # M5.3 per-domain rollup
         enrollment.current_step = step_order  # record which step was actually sent
         apply_event(db, enrollment, Event.SEND_OK, detail={"step": step_order})
         schedule_next_step(db, enrollment, wait_days, lead.timezone)
@@ -276,8 +322,7 @@ def generate_touch_task(self, enrollment_id: str):
     from craftsman.sequencer.scheduling import add_business_days
     from craftsman.sequencer.tick import apply_event
 
-    with session_scope() as db:
-        enrollment = db.get(Enrollment, enrollment_id)
+    with _org_task_scope(Enrollment, enrollment_id) as (db, enrollment):
         if enrollment is None or enrollment.state != "ready":
             return
         lead = db.get(Lead, enrollment.lead_id)
@@ -407,8 +452,7 @@ def generate_reply_draft(self, inbound_message_id: str):
     from craftsman.copywriter.reply_fill import generate_reply_copy
     from craftsman.core.models import ReplyDraft, ReviewQueueItem
 
-    with session_scope() as db:
-        inbound = db.get(Message, inbound_message_id)
+    with _org_task_scope(Message, inbound_message_id) as (db, inbound):
         if inbound is None or inbound.direction != "inbound":
             return
         if inbound.classification not in ("interested", "objection"):
@@ -514,7 +558,7 @@ def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
     from craftsman.core.models import AuditLog
     from craftsman.inbox.autopilot import AutopilotContext, decide, prior_auto_replies
     from craftsman.inbox.escalation import evaluate, load_rules
-    from craftsman.sender.reply import send_reply_draft
+    from craftsman.sender.reply import DraftUnavailable, send_reply_draft
     from craftsman.sender.smtp import SendBlocked
 
     settings = get_settings()
@@ -560,6 +604,15 @@ def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
                 "confidence": inbound.classification_confidence,
             },
         ))
+        # M5.4: announce the send to subscribed endpoints (never blocks the path)
+        from craftsman.webhooks.events import safe_emit
+
+        safe_emit(db, "autopilot.sent", {
+            "draft_id": str(draft.id),
+            "enrollment_id": str(enrollment.id),
+            "skeleton": draft.skeleton_key,
+            "confidence": inbound.classification_confidence,
+        })
         log.info("autopilot dispatched draft %s (%s)", draft.id, draft.skeleton_key)
     except SendBlocked as e:
         # rate limit / capacity → draft is back in pending for a human; suppression
@@ -569,6 +622,16 @@ def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
             enrollment_id=enrollment.id,
             event="autopilot_declined",
             detail={"draft_id": str(draft.id), "reason": f"send_blocked:{e.reason}"},
+        ))
+    except DraftUnavailable as e:
+        # lost the structural thread-guard race (F-05): another auto-reply claimed
+        # this thread between our policy read and the dispatch CAS — the draft
+        # stays pending for a human, which is exactly the invariant's promise
+        log.warning("autopilot claim refused for draft %s: %s", draft.id, e)
+        db.add(AuditLog(
+            enrollment_id=enrollment.id,
+            event="autopilot_declined",
+            detail={"draft_id": str(draft.id), "reason": "thread_guard"},
         ))
     except Exception as e:  # never fail the generation task over an auto-send
         log.warning("autopilot send failed for draft %s: %s", draft.id, e)
@@ -606,8 +669,7 @@ def run_dry_run(dry_run_id: str):
     from craftsman.scoring.icp import icp_score, lead_text
     from craftsman.sender.smtp import PreparedEmail, build_dry_run_email, deliver_to_mailpit
 
-    with session_scope() as db:
-        run = db.get(DryRun, dry_run_id)
+    with _org_task_scope(DryRun, dry_run_id) as (db, run):
         if run is None or run.status != "running":
             return
         campaign = db.get(Campaign, run.campaign_id)
@@ -699,6 +761,90 @@ def run_dry_run(dry_run_id: str):
         db.add(run)
 
 
+# ------------------------------------------------------------------ placement (M5.3)
+
+
+@app.task
+def run_placement(run_id: str):
+    """Inbox placement smoke test: deliver the campaign opener (constant sample
+    fills, no LLM) to the run's operator-owned seed addresses through the real
+    send engine. Touches mailbox rate slots and sent_today only — never campaign/
+    org caps, bandit, enrollments, or Message rows (deliverability/placement.py)."""
+    from craftsman.core.models import PlacementRun
+    from craftsman.deliverability.placement import execute_placement_run
+
+    with _org_task_scope(PlacementRun, run_id) as (db, run):
+        if run is None or run.status != "running":
+            return
+        _run(execute_placement_run(db, run))
+
+
+# ------------------------------------------------------------------ webhooks out (M5.4)
+
+
+class WebhookDeliveryFailed(RuntimeError):
+    """Terminal delivery failure (attempts exhausted) — raised so the
+    task_failure signal records a dead letter for re-drive/inspection."""
+
+
+@app.task(bind=True, max_retries=None)
+def deliver_webhook(self, delivery_id: str):
+    """POST one webhook delivery to its endpoint, signed with the endpoint's
+    secret (same HMAC-SHA256-over-raw-body scheme we verify inbound from
+    Cal.com — see webhooks/delivery.py). The endpoint URL is re-validated
+    through the M0.5 SSRF guard at delivery time as well as registration,
+    because DNS can change in between. Failures retry with exponential backoff
+    (30s→1h) up to the `webhook_max_attempts` knob; exhaustion marks the row
+    failed and raises so the task_failure signal dead-letters it. The durable
+    `attempts` counter on the row — not Celery's retry count — is the
+    authority, so redeliveries can't extend the budget."""
+    from craftsman.core.config import get_settings
+    from craftsman.core.crypto import decrypt
+    from craftsman.core.models import WebhookDelivery, WebhookEndpoint
+    from craftsman.webhooks import delivery as wd
+
+    max_attempts = get_settings().webhook_max_attempts
+    with _org_task_scope(WebhookDelivery, delivery_id) as (db, row):
+        if row is None or row.status != "pending":
+            return
+        endpoint = db.get(WebhookEndpoint, row.endpoint_id)
+        if endpoint is None or not endpoint.active:
+            row.status = "failed"
+            row.last_error = "endpoint deleted or deactivated"
+            db.add(row)
+            return
+        row.attempts += 1
+        db.add(row)
+        try:
+            wd.validate_url(endpoint.url)  # SSRF re-check: DNS may have changed
+            body = wd.build_body(row)
+            headers = {
+                "Content-Type": "application/json",
+                wd.EVENT_HEADER: row.event_type,
+                wd.DELIVERY_HEADER: str(row.id),
+                wd.SIGNATURE_HEADER: wd.sign_body(decrypt(endpoint.secret_enc), body),
+            }
+            wd.post_delivery(endpoint.url, body, headers)
+        except Exception as e:  # noqa: BLE001 — every failure mode retries the same way
+            row.last_error = f"{type(e).__name__}: {e}"[:2000]
+            db.add(row)
+            if row.attempts >= max_attempts:
+                row.status = "failed"
+                db.commit()  # terminal state durable before the failure signal fires
+                log.warning(
+                    "webhook delivery %s failed terminally after %d attempts: %s",
+                    delivery_id, row.attempts, row.last_error,
+                )
+                raise WebhookDeliveryFailed(
+                    f"delivery {delivery_id} exhausted {max_attempts} attempts: {row.last_error}"
+                ) from e
+            db.commit()  # attempt count durable before we wait out the backoff
+            raise self.retry(countdown=wd.backoff_seconds(row.attempts))
+        row.status = "delivered"
+        row.delivered_at = datetime.now(timezone.utc)
+        db.add(row)
+
+
 # ------------------------------------------------------------------ enrich
 
 
@@ -713,11 +859,11 @@ def enrich_lead(lead_id: str):
         apply_enrichment,
         build_enrichment_chain,
         chain_enrich,
+        reserve_enrichment_calls,
     )
     from craftsman.ingest.verify import verify_email
 
-    with session_scope() as db:
-        lead = db.get(Lead, lead_id)
+    with _org_task_scope(Lead, lead_id) as (db, lead):
         if lead is None:
             return
         if verify_email(lead.email):
@@ -731,6 +877,13 @@ def enrich_lead(lead_id: str):
         try:  # noqa: SIM105 — enrichment must never un-verify a lead
             chain = build_enrichment_chain(get_settings())
             if not chain:
+                return
+            # per-org daily enrichment budget (M5.1c): exhausted ⇒ verify-only
+            if not reserve_enrichment_calls(db, lead.org_id, len(chain)):
+                log.info(
+                    "enrichment budget exhausted for org %s — verify-only for lead %s",
+                    lead.org_id, lead_id,
+                )
                 return
             company = db.get(Company, lead.company_id) if lead.company_id else None
             inp = EnrichmentInput(
@@ -762,7 +915,9 @@ def collect_signals():
 
     notify = _slack_notifier(settings)
     total = 0
-    with session_scope() as db:
+
+    def _collect_for_current_org(db) -> int:
+        n = 0
         for collector in collectors:
             try:
                 collected = _run(collector.collect(db))
@@ -776,7 +931,13 @@ def collect_signals():
                 db.add(signal)
                 db.flush()
                 evaluate_rules(db, signal, settings.icp_threshold, notify=notify)
-                total += 1
+                n += 1
+        return n
+
+    with session_scope() as db:
+        for oid in _org_ids(db):
+            with org_context(oid):
+                total += _collect_for_current_org(db)
     log.info("collect_signals recorded %d new signals", total)
     return total
 
@@ -811,28 +972,30 @@ def poll_inboxes():
     settings = get_settings()
     enqueue_draft = lambda message_id: generate_reply_draft.delay(str(message_id))  # noqa: E731
     with session_scope() as db:
-        mailboxes = db.scalars(
-            select(Mailbox).where(
-                Mailbox.imap_host.isnot(None),
-                Mailbox.imap_host != "",
-            )
-        ).all()
-        for mailbox in mailboxes:
-            for inbound in fetch_unseen(mailbox):
-                _run(handle_inbound(
-                    db, llm, inbound, mailbox_id=mailbox.id, enqueue_draft=enqueue_draft
-                ))
+        for oid in _org_ids(db):
+            with org_context(oid):
+                mailboxes = db.scalars(
+                    select(Mailbox).where(
+                        Mailbox.imap_host.isnot(None),
+                        Mailbox.imap_host != "",
+                    )
+                ).all()
+                for mailbox in mailboxes:
+                    for inbound in fetch_unseen(mailbox):
+                        _run(handle_inbound(
+                            db, llm, inbound, mailbox_id=mailbox.id, enqueue_draft=enqueue_draft
+                        ))
 
-        if settings.mailpit_url:
-            for inbound in fetch_mailpit(db, settings.mailpit_url):
-                # attribute to first healthy mailbox when present
-                box_id = mailboxes[0].id if mailboxes else None
-                if box_id is None:
-                    any_box = db.scalars(select(Mailbox).limit(1)).first()
-                    box_id = any_box.id if any_box else None
-                _run(handle_inbound(
-                    db, llm, inbound, mailbox_id=box_id, enqueue_draft=enqueue_draft
-                ))
+                if settings.mailpit_url:
+                    for inbound in fetch_mailpit(db, settings.mailpit_url):
+                        # attribute to first healthy mailbox when present
+                        box_id = mailboxes[0].id if mailboxes else None
+                        if box_id is None:
+                            any_box = db.scalars(select(Mailbox).limit(1)).first()
+                            box_id = any_box.id if any_box else None
+                        _run(handle_inbound(
+                            db, llm, inbound, mailbox_id=box_id, enqueue_draft=enqueue_draft
+                        ))
 
 
 # ------------------------------------------------------------------ settle + housekeeping
@@ -843,7 +1006,11 @@ def settle_bandit():
     from craftsman.bandit.settle import settle_expired
 
     with session_scope() as db:
-        return settle_expired(db)
+        total = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                total += settle_expired(db)
+        return total
 
 
 @app.task
@@ -853,9 +1020,12 @@ def redrive_unsent():
     from craftsman.sequencer.redrive import redrive_unsent_claims
 
     with session_scope() as db:
-        n = redrive_unsent_claims(
-            db, after_minutes=get_settings().redrive_unsent_after_minutes
-        )
+        n = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                n += redrive_unsent_claims(
+                    db, after_minutes=get_settings().redrive_unsent_after_minutes
+                )
     if n:
         log.info("redrive_unsent swept %d stuck claim(s)", n)
     return n
@@ -863,18 +1033,33 @@ def redrive_unsent():
 
 @app.task
 def reset_daily_counters():
-    from sqlalchemy import update
+    from sqlalchemy import delete, update
 
-    from craftsman.core.models import Campaign
+    from craftsman.core.config import get_settings
+    from craftsman.core.models import AuditLog, Campaign
 
+    retention_days = get_settings().audit_retention_days
     with session_scope() as db:
-        for mailbox in db.scalars(select(Mailbox)).all():
-            mailbox.sent_today = 0
-            mailbox.hard_bounces_today = 0
-            if mailbox.health == "degraded":
-                mailbox.health = "ok"
-            if mailbox.warmup_stage < 4:
-                mailbox.warmup_stage += 1
-            db.add(mailbox)
-        # zero the per-campaign send counters used by the atomic cap reserve
-        db.execute(update(Campaign).values(sent_today=0))
+        for oid in _org_ids(db):
+            with org_context(oid):
+                for mailbox in db.scalars(select(Mailbox)).all():
+                    mailbox.sent_today = 0
+                    mailbox.hard_bounces_today = 0
+                    if mailbox.health == "degraded":
+                        mailbox.health = "ok"
+                    if mailbox.warmup_stage < 4:
+                        mailbox.warmup_stage += 1
+                    db.add(mailbox)
+                # zero the per-campaign send counters used by the atomic cap reserve
+                db.execute(update(Campaign).values(sent_today=0))
+                # audit retention (M5.4): 0 = keep forever. AuditLog is OrgScoped,
+                # so the delete runs INSIDE the per-org loop — the tenancy layer
+                # appends the org predicate and each org only ever prunes itself.
+                if retention_days > 0:
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+                    db.execute(delete(AuditLog).where(AuditLog.created_at < cutoff))
+        # zero the per-org quota counters (M5.1c) — Org is not org-scoped, so this
+        # single UPDATE covers every tenant
+        from craftsman.core.models import Org
+
+        db.execute(update(Org).values(sent_today=0, enrichment_calls_today=0))

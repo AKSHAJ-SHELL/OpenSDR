@@ -161,6 +161,9 @@ def setup_db(n_leads: int) -> None:
         conn.execute(text("DROP DATABASE IF EXISTS craftsman_demo WITH (FORCE)"))
         conn.execute(text("CREATE DATABASE craftsman_demo"))
     init_db()
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, set_request_org
+
+    set_request_org(DEFAULT_ORG_ID)  # demo rows live in the default org (M5.1)
 
     with session_scope() as db:
         db.add(Mailbox(email="sam@flowbot-demo.test", smtp_host="localhost",

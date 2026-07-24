@@ -18,7 +18,8 @@ from craftsman.compliance.suppression import is_suppressed, make_unsubscribe_tok
 from craftsman.core.config import get_settings
 from craftsman.core.crypto import decrypt
 from craftsman.core.models import Campaign, Enrollment, Lead, Mailbox, Message
-from craftsman.sender.limiter import acquire_send_slot
+from craftsman.ingest.verify import domain_of
+from craftsman.sender.limiter import acquire_domain_slot, acquire_send_slot
 from craftsman.sender.warmup import effective_daily_limit
 
 
@@ -69,7 +70,8 @@ def campaign_sent_today(db: Session, campaign_id) -> int:
 
 
 def run_presend_checks(db: Session, lead: Lead, campaign: Campaign) -> Mailbox:
-    """Suppression → mailbox capacity → per-mailbox rate limit. The per-campaign cap
+    """Suppression → mailbox capacity → per-mailbox rate limit → per-domain rate
+    limit (M5.3, off unless `domain_min_interval_s` is set). The per-campaign cap
     is a separate atomic reserve (reserve_campaign_slot), evaluated last by the caller
     so a slot is only taken when a send is actually imminent."""
     if is_suppressed(db, lead.email):
@@ -80,7 +82,42 @@ def run_presend_checks(db: Session, lead: Lead, campaign: Campaign) -> Mailbox:
     wait = acquire_send_slot(str(mailbox.id))
     if wait > 0:
         raise SendBlocked("rate_limited", retry_in=wait)
+    wait = acquire_domain_slot(domain_of(mailbox.email))
+    if wait > 0:
+        raise SendBlocked("domain_rate_limited", retry_in=wait)
     return mailbox
+
+
+def reserve_org_slot(db: Session, org_id) -> bool:
+    """Atomically claim one send against the org's daily cap (M5.1c).
+
+    Same conditional-UPDATE pattern as the campaign slot; NULL cap = unlimited
+    (the self-hoster default) and always reserves. Applies to cold sends only —
+    replies to engaged humans are bounded by mailbox limits instead, mirroring
+    the campaign-cap doctrine in sender/reply.py."""
+    from sqlalchemy import or_
+
+    from craftsman.core.models import Org
+
+    result = db.execute(
+        update(Org)
+        .where(
+            Org.id == org_id,
+            or_(Org.daily_send_cap.is_(None), Org.sent_today < Org.daily_send_cap),
+        )
+        .values(sent_today=Org.sent_today + 1)
+    )
+    return result.rowcount == 1
+
+
+def release_org_slot(db: Session, org_id) -> None:
+    from craftsman.core.models import Org
+
+    db.execute(
+        update(Org)
+        .where(Org.id == org_id, Org.sent_today > 0)
+        .values(sent_today=Org.sent_today - 1)
+    )
 
 
 def reserve_campaign_slot(db: Session, campaign: Campaign) -> bool:
@@ -179,12 +216,21 @@ async def deliver(mailbox: Mailbox, msg: EmailMessage) -> None:
     await aiosmtplib.send(msg, **kwargs)
 
 
-def record_bounce(db: Session, mailbox: Mailbox) -> None:
-    """Two hard bounces in a day → health='degraded' (cap halves via pick_mailbox)."""
+def record_bounce(db: Session, mailbox: Mailbox, diagnostic: str | None = None) -> None:
+    """Two hard bounces in a day → health='degraded' (cap halves via pick_mailbox).
+    M5.3: every bounce also lands in the per-domain rollup — spam/block/reputation
+    diagnostics count as the complaint proxy — and a domain crossing
+    `domain_pause_bounce_threshold` for the day pauses ALL of its mailboxes."""
     mailbox.hard_bounces_today += 1
-    if mailbox.hard_bounces_today >= 2:
+    # paused outranks degraded: a straggler bounce must never demote a paused
+    # mailbox (operator- or auto-paused) back into the sendable pool
+    if mailbox.hard_bounces_today >= 2 and mailbox.health != "paused":
         mailbox.health = "degraded"
     db.add(mailbox)
+
+    from craftsman.deliverability.health import record_domain_bounce
+
+    record_domain_bounce(db, domain_of(mailbox.email), diagnostic)
 
 
 def last_outbound_in_thread(db: Session, enrollment_id: uuid.UUID) -> Message | None:

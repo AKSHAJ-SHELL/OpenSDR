@@ -581,6 +581,9 @@ def _dry_run_out(run: DryRun) -> DryRunOut:
 )
 def bandit_posteriors(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     """Posterior data for the dashboard's converging-Beta-PDF viz."""
+    # 404 for an invisible campaign (M5.1d convention: foreign id ≡ nonexistent)
+    if db.get(Campaign, campaign_id) is None:
+        raise HTTPException(404, "campaign not found")
     rows = db.execute(
         select(Variant, SequenceStep.step_order)
         .join(SequenceStep, Variant.step_id == SequenceStep.id)

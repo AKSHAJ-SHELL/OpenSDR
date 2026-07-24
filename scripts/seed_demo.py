@@ -30,7 +30,10 @@ SLOT_SCHEMA = {
 
 
 def main() -> None:
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, set_request_org
+
     init_db()
+    set_request_org(DEFAULT_ORG_ID)  # demo data lives in the default org (M5.1)
     rng = random.Random(42)
     with session_scope() as db:
         campaign = Campaign(

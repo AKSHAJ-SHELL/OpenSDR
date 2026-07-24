@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # ---------------------------------------------------------------- LLM schemas
 
@@ -367,6 +367,70 @@ class DeliverabilityReport(BaseModel):
     warmup: WarmupOut
 
 
+# ---------------------------------------------------------------- deliverability suite (M5.3)
+
+
+class BlocklistOut(BaseModel):
+    zone: str
+    status: str  # listed | clear | error ("couldn't check", never a listing)
+    listed_ips: list[str] = []
+
+
+class DomainStats7dOut(BaseModel):
+    sends: int
+    hard_bounces: int
+    spam_bounces: int  # complaint proxy — see deliverability/health.py
+    bounce_rate: float
+    complaint_rate: float
+
+
+class DomainHealthOut(BaseModel):
+    domain: str
+    score: int  # 0-100, formula in deliverability/health.py docstring
+    components: dict[str, int]  # points deducted per factor; 0 = clean
+    mailboxes: int
+    paused_mailboxes: int
+    spf: DnsRecordOut
+    dmarc: DmarcOut
+    dkim: DkimOut
+    blocklists: list[BlocklistOut]
+    stats_7d: DomainStats7dOut
+
+
+class PlacementCreate(BaseModel):
+    campaign_id: uuid.UUID
+    # ≤10 operator-owned seed addresses; schema-enforced so oversized or
+    # non-email payloads never reach the send path
+    seed_emails: list[EmailStr] = Field(min_length=1, max_length=10)
+
+
+class PlacementMarkRequest(BaseModel):
+    marks: dict[str, Literal["inbox", "spam", "missing"]]  # seed_email → verdict
+
+
+class PlacementResultOut(BaseModel):
+    id: uuid.UUID
+    seed_email: str
+    verdict: str  # pending|inbox|spam|missing
+    delivered: bool
+    error: str | None = None
+    marked_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PlacementRunOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    status: str  # running|complete|failed
+    error: str | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
+    results: list[PlacementResultOut] = []
+
+    model_config = {"from_attributes": True}
+
+
 
 class MessageOut(BaseModel):
     id: uuid.UUID
@@ -667,5 +731,136 @@ class DeadLetterOut(BaseModel):
     exception: str | None = None
     enrollment_id: str | None = None
     created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- users & SSO (M5.1b)
+
+
+class UserOut(BaseModel):
+    id: uuid.UUID
+    email: EmailStr
+    display_name: str | None = None
+    role: Literal["owner", "operator", "viewer"]
+    has_password: bool = False
+    sso_linked: bool = False
+    disabled_at: datetime | None = None
+    last_login_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    role: Literal["owner", "operator", "viewer"] = "viewer"
+    display_name: str | None = None
+    # optional initial password; omitted = SSO-only until an owner sets one
+    password: str | None = Field(default=None, min_length=12)
+
+
+class UserUpdate(BaseModel):
+    role: Literal["owner", "operator", "viewer"] | None = None
+    display_name: str | None = None
+    disabled: bool | None = None
+    password: str | None = Field(default=None, min_length=12)
+
+
+class CredentialsIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class CredentialVerifyOut(BaseModel):
+    user_id: uuid.UUID
+    email: EmailStr
+    role: Literal["owner", "operator", "viewer"]
+    display_name: str | None = None
+
+
+class SsoExchangeIn(BaseModel):
+    code: str
+
+
+class SsoStatusOut(BaseModel):
+    enabled: bool
+
+
+class OrgOut(BaseModel):
+    """The caller's own org: identity, quotas (null = unlimited), and today's
+    usage. Quotas are set by the INSTANCE operator (python -m craftsman.manage_org),
+    not by the tenant — this view is read-only on purpose."""
+
+    id: uuid.UUID
+    name: str
+    slug: str
+    daily_send_cap: int | None = None
+    sent_today: int = 0
+    max_mailboxes: int | None = None
+    mailbox_count: int = 0
+    enrichment_daily_budget: int | None = None
+    enrichment_calls_today: int = 0
+
+
+# ---------------------------------------------------------------- webhooks out (M5.4)
+
+
+def _known_event_types(mask: list[str]) -> list[str]:
+    """Shared mask validator: only registry event types, de-duped, order kept.
+    The registry (webhooks/events.py) is the single source of truth — a forged
+    event type is a 422 at the API edge, exactly like at emit time."""
+    from craftsman.webhooks.events import EVENT_TYPES
+
+    unknown = [e for e in mask if e not in EVENT_TYPES]
+    if unknown:
+        raise ValueError(f"unknown event type(s): {unknown} — valid: {list(EVENT_TYPES)}")
+    return list(dict.fromkeys(mask))
+
+
+class WebhookEndpointCreate(BaseModel):
+    url: str = Field(min_length=1)
+    event_mask: list[str] = Field(min_length=1)
+
+    @field_validator("event_mask")
+    @classmethod
+    def _mask_known(cls, v: list[str]) -> list[str]:
+        return _known_event_types(v)
+
+
+class WebhookEndpointUpdate(BaseModel):
+    url: str | None = None
+    event_mask: list[str] | None = Field(default=None, min_length=1)
+    active: bool | None = None
+
+    @field_validator("event_mask")
+    @classmethod
+    def _mask_known(cls, v: list[str] | None) -> list[str] | None:
+        return None if v is None else _known_event_types(v)
+
+
+class WebhookEndpointOut(BaseModel):
+    id: uuid.UUID
+    url: str
+    event_mask: list[str]
+    active: bool
+    secret_prefix: str  # never the secret — shown once at creation only
+    created_at: datetime | None = None
+
+
+class WebhookEndpointCreated(WebhookEndpointOut):
+    """Returned exactly once, on creation: includes the plaintext secret."""
+
+    secret: str
+
+
+class WebhookDeliveryOut(BaseModel):
+    id: uuid.UUID
+    endpoint_id: uuid.UUID
+    event_type: str
+    payload: dict
+    status: Literal["pending", "delivered", "failed"]
+    attempts: int
+    last_error: str | None = None
+    created_at: datetime | None = None
+    delivered_at: datetime | None = None
 
     model_config = {"from_attributes": True}

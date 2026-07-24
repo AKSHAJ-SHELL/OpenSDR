@@ -6,6 +6,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from craftsman.core.config import get_settings
 
+# importing tenancy registers the class-level Session listeners that enforce
+# org scoping on EVERY session in the process — app, workers, and tests alike
+from craftsman.core import tenancy as _tenancy  # noqa: F401  (side-effect import)
+
 _engine = None
 _SessionLocal = None
 
@@ -57,12 +61,17 @@ def init_db() -> None:
     those on startup. Do not use init_db() to build a schema you intend to migrate later.
     """
     from craftsman.core import models
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, unscoped_context
 
     engine = get_engine()
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
     models.Base.metadata.create_all(engine)
+    # mirror migration 0016's backfill world: the default org always exists
+    with unscoped_context(), session_scope() as db:
+        if db.get(models.Org, DEFAULT_ORG_ID) is None:
+            db.add(models.Org(id=DEFAULT_ORG_ID, name="Default", slug="default"))
 
 
 def run_migrations() -> None:

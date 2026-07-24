@@ -19,6 +19,7 @@ from craftsman.api.deps import get_db
 from craftsman.core.config import get_settings
 from craftsman.core.models import Campaign, Enrollment, Lead, Meeting
 from craftsman.core.schemas import MeetingOut
+from craftsman.core.tenancy import DEFAULT_ORG_ID, org_context, unscoped_context
 from craftsman.meetings.providers import MeetingEvent, build_provider
 
 log = logging.getLogger(__name__)
@@ -34,17 +35,21 @@ _MATCH_ORDER = (
 
 
 def _match_enrollment(db: Session, attendee_emails: tuple[str, ...]) -> Enrollment | None:
+    """Runs UNSCOPED (M5.1): the webhook secret is instance-wide, so the booking
+    could belong to any org's lead. Two orgs may know the same address — leads
+    are tried in creation order, and the winner's org stamps the meeting."""
     for email in attendee_emails:
-        lead = db.scalar(select(Lead).where(Lead.email == email.lower()))
-        if lead is None:
-            continue
-        enrollments = db.scalars(
-            select(Enrollment).where(Enrollment.lead_id == lead.id)
+        leads = db.scalars(
+            select(Lead).where(Lead.email == email.lower()).order_by(Lead.created_at)
         ).all()
-        for state in _MATCH_ORDER:
-            for enr in enrollments:
-                if enr.state == state:
-                    return enr
+        for lead in leads:
+            enrollments = db.scalars(
+                select(Enrollment).where(Enrollment.lead_id == lead.id)
+            ).all()
+            for state in _MATCH_ORDER:
+                for enr in enrollments:
+                    if enr.state == state:
+                        return enr
     return None
 
 
@@ -66,6 +71,9 @@ def _apply_event_row(db: Session, event: MeetingEvent) -> Meeting:
         )
         enrollment = _match_enrollment(db, event.attendee_emails)
         meeting.enrollment_id = enrollment.id if enrollment else None
+        # the matched enrollment's org owns the meeting; an unmatched booking
+        # lands in the default org (instance catch-all) rather than nowhere
+        meeting.org_id = enrollment.org_id if enrollment else DEFAULT_ORG_ID
         db.add(meeting)
         db.flush()
     else:
@@ -81,18 +89,35 @@ def _apply_event_row(db: Session, event: MeetingEvent) -> Meeting:
         )
         if enrollment is not None and enrollment.state != "meeting_booked":
             was_awaiting = enrollment.state == "awaiting_human_touch"
-            try:
-                apply_event(
-                    db, enrollment, Event.MEETING_BOOKED,
-                    detail={"provider": event.provider, "event_id": event.provider_event_id},
-                )
-                enrollment.next_action_at = None
-                db.add(enrollment)
-                if was_awaiting:
-                    cancel_open_tasks(db, enrollment.id, reason="meeting_booked")
-            except InvalidTransition as e:
-                log.warning("meeting booked but transition skipped: %s", e)
+            # the transition writes org-scoped rows (audit log, task updates) —
+            # enter the enrollment's org so they stamp into the right tenant
+            with org_context(enrollment.org_id):
+                try:
+                    apply_event(
+                        db, enrollment, Event.MEETING_BOOKED,
+                        detail={"provider": event.provider, "event_id": event.provider_event_id},
+                    )
+                    enrollment.next_action_at = None
+                    db.add(enrollment)
+                    if was_awaiting:
+                        cancel_open_tasks(db, enrollment.id, reason="meeting_booked")
+                except InvalidTransition as e:
+                    log.warning("meeting booked but transition skipped: %s", e)
     db.flush()  # state + meeting row durable in-transaction before the response
+
+    # M5.4: meeting.updated. This function runs UNSCOPED (the webhook is
+    # instance-wide), so enter the meeting's own org before emitting — the
+    # endpoint lookup and delivery rows must belong to the meeting's tenant.
+    from craftsman.webhooks.events import safe_emit
+
+    with org_context(meeting.org_id):
+        safe_emit(db, "meeting.updated", {
+            "meeting_id": str(meeting.id),
+            "provider": meeting.provider,
+            "status": meeting.status,
+            "enrollment_id": str(meeting.enrollment_id) if meeting.enrollment_id else None,
+            "start_at": meeting.start_at.isoformat() if meeting.start_at else None,
+        })
     return meeting
 
 
@@ -116,7 +141,10 @@ async def calcom_webhook(
     if event is None:
         # unknown trigger or missing uid — acknowledge so Cal.com stops retrying
         return {"handled": False}
-    meeting = _apply_event_row(db, event)
+    # HMAC-verified system input, instance-wide by nature: the one justified
+    # unscoped write path — org attribution happens inside (see _apply_event_row)
+    with unscoped_context():
+        meeting = _apply_event_row(db, event)
     return {
         "handled": True,
         "meeting_id": str(meeting.id),

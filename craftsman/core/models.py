@@ -1,11 +1,12 @@
 """SQLAlchemy models — mirrors the design doc schema exactly."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -16,7 +17,13 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    declared_attr,
+    mapped_column,
+    relationship,
+)
 
 EMBEDDING_DIM = 1024
 
@@ -29,11 +36,107 @@ def _uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
 
-class Company(Base):
-    __tablename__ = "companies"
+class OrgScoped:
+    """Mixin: this table belongs to exactly one org (M5.1).
+
+    `craftsman/core/tenancy.py` enforces the boundary centrally at the session
+    layer — SELECTs against any OrgScoped entity are filtered to the active org
+    (fail-closed: no context ⇒ TenancyError), new rows are stamped from the
+    context, and cross-org writes/moves are refused. Routers and workers never
+    filter by org themselves; a forgotten filter cannot leak.
+    """
+
+    @declared_attr
+    def org_id(cls) -> Mapped[uuid.UUID]:
+        return mapped_column(
+            UUID(as_uuid=True), ForeignKey("orgs.id"), nullable=False, index=True
+        )
+
+
+class Org(Base):
+    """A tenant (M5.1). Migration 0016 creates the default org (slug `default`)
+    and backfills every pre-M5 row into it — single-tenant self-hosters never
+    have to think about this table. Quota columns are per-org data, not global
+    knobs; NULL = unlimited (the self-hoster default)."""
+
+    __tablename__ = "orgs"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    domain: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    # per-org quotas (M5.1c): enforcement in sender/ingest paths
+    daily_send_cap: Mapped[int | None] = mapped_column(Integer)
+    # atomic reserve/release counter, mirrors campaigns.sent_today (M0.6a pattern)
+    sent_today: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_mailboxes: Mapped[int | None] = mapped_column(Integer)
+    enrichment_daily_budget: Mapped[int | None] = mapped_column(Integer)
+    enrichment_calls_today: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class User(OrgScoped, Base):
+    """A dashboard/API user (M5.1b). Role maps to the API scope hierarchy:
+    owner→admin, operator→operate, viewer→read. `password_hash` is scrypt (the
+    M0.1 dashboard format) and nullable — SSO-only users have none. OIDC
+    identity is (issuer, subject), globally unique; lookup happens unscoped
+    (the pair is the credential), then the user's org is entered."""
+
+    __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_user_org_email"),
+        UniqueConstraint("oidc_issuer", "oidc_sub", name="uq_user_oidc_identity"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text)
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="viewer")  # owner|operator|viewer
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    oidc_issuer: Mapped[str | None] = mapped_column(Text)
+    oidc_sub: Mapped[str | None] = mapped_column(Text)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+from craftsman.core.tenancy import register_init_stamp  # noqa: E402 — needs OrgScoped defined
+
+register_init_stamp()
+
+
+class GlobalSuppressionEntry(Base):
+    """The optional cross-org do-not-contact overlay (⛔ Gate M5 Q1a). Checked
+    ADDITIVELY by is_suppressed when `global_suppression_enabled` — an org list
+    can never shadow it, mirroring the escalation-defaults union semantics.
+    Deliberately NOT OrgScoped: its whole point is to span orgs; it is only
+    ever consulted as a boolean (never listed to a tenant), so it leaks no
+    presence information."""
+
+    __tablename__ = "global_suppression"
+
+    email: Mapped[str] = mapped_column(Text, primary_key=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class Company(OrgScoped, Base):
+    __tablename__ = "companies"
+    # per-org domains (M5.1): research briefs/embeddings are tenant data — no
+    # cross-org sharing, which would leak one tenant's research to another
+    __table_args__ = (UniqueConstraint("org_id", "domain", name="uq_company_org_domain"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[str | None] = mapped_column(Text)
     # Enrichment-fillable facts (M2.1) — written only when empty, provenance in
     # lead_enrichments. `size` is text: providers report counts OR ranges ("51-200").
@@ -47,12 +150,14 @@ class Company(Base):
     leads: Mapped[list["Lead"]] = relationship(back_populates="company")
 
 
-class Lead(Base):
+class Lead(OrgScoped, Base):
     __tablename__ = "leads"
+    # per-org emails (M5.1): two orgs may each know the same person
+    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_lead_org_email"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     company_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("companies.id"))
-    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
     first_name: Mapped[str | None] = mapped_column(Text)
     last_name: Mapped[str | None] = mapped_column(Text)
     title: Mapped[str | None] = mapped_column(Text)
@@ -80,7 +185,7 @@ class Lead(Base):
     company: Mapped[Company | None] = relationship(back_populates="leads")
 
 
-class LeadEnrichmentRecord(Base):
+class LeadEnrichmentRecord(OrgScoped, Base):
     """Append-only provenance: which provider said what about a lead, and when.
 
     One row per field the chain resolved — including fields whose canonical column
@@ -104,7 +209,7 @@ class LeadEnrichmentRecord(Base):
     )
 
 
-class Signal(Base):
+class Signal(OrgScoped, Base):
     """An intent observation about a company (M2.3): funding, hiring, tech-stack moves.
     Company-level, not person PII — so erasure of a lead does not touch these. Feeds a
     decaying signal component of the ICP score and can trigger signal_rules."""
@@ -125,7 +230,7 @@ class Signal(Base):
     __table_args__ = (Index("ix_signals_company_type_observed", "company_id", "type", "observed_at"),)
 
 
-class SignalRule(Base):
+class SignalRule(OrgScoped, Base):
     """Per-campaign policy: when a signal_type is observed, do `action`. `enroll` is the
     only autonomy-bearing action and fires only where an operator created the rule (M2.3)."""
 
@@ -142,7 +247,7 @@ class SignalRule(Base):
     )
 
 
-class CollectorState(Base):
+class CollectorState(OrgScoped, Base):
     """Per-company, per-collector fingerprint so diff-based collectors detect *change*
     (careers/homepage) and dedupe feed entries (funding) without re-emitting (M2.3)."""
 
@@ -159,7 +264,7 @@ class CollectorState(Base):
     __table_args__ = (UniqueConstraint("company_id", "collector", name="uq_collector_state"),)
 
 
-class Campaign(Base):
+class Campaign(OrgScoped, Base):
     __tablename__ = "campaigns"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -191,7 +296,7 @@ class Campaign(Base):
     )
 
 
-class SequenceStep(Base):
+class SequenceStep(OrgScoped, Base):
     __tablename__ = "sequence_steps"
     __table_args__ = (UniqueConstraint("campaign_id", "step_order"),)
 
@@ -214,7 +319,7 @@ class SequenceStep(Base):
     variants: Mapped[list["Variant"]] = relationship(back_populates="step")
 
 
-class Variant(Base):
+class Variant(OrgScoped, Base):
     __tablename__ = "variants"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -234,7 +339,7 @@ class Variant(Base):
         return int(self.alpha + self.beta - 2)
 
 
-class Enrollment(Base):
+class Enrollment(OrgScoped, Base):
     __tablename__ = "enrollments"
     __table_args__ = (
         UniqueConstraint("lead_id", "campaign_id"),
@@ -258,7 +363,7 @@ class Enrollment(Base):
     campaign: Mapped[Campaign] = relationship()
 
 
-class Message(Base):
+class Message(OrgScoped, Base):
     __tablename__ = "messages"
     __table_args__ = (
         # Idempotency: at most one outbound message per (enrollment, step). The send
@@ -295,7 +400,7 @@ class Message(Base):
     variant: Mapped[Variant | None] = relationship()
 
 
-class TouchTask(Base):
+class TouchTask(OrgScoped, Base):
     """A human-touch task for an assisted-channel step (M3.1): the validated message
     (LinkedIn) or grounded call brief, waiting for a human to perform the touch.
 
@@ -333,7 +438,7 @@ class TouchTask(Base):
     enrollment: Mapped[Enrollment] = relationship()
 
 
-class Meeting(Base):
+class Meeting(OrgScoped, Base):
     """A booked meeting (M4.3, G8) — the funnel's terminal win, learned from a
     signed calendar-provider webhook. UNIQUE(provider_event_id) makes webhook
     redelivery an update, not a duplicate. No FK cascade per M0.4 doctrine;
@@ -362,7 +467,7 @@ class Meeting(Base):
     enrollment: Mapped[Enrollment | None] = relationship()
 
 
-class EscalationRule(Base):
+class EscalationRule(OrgScoped, Base):
     """When a human is pulled in, as data (M4.2, G9). NULL campaign_id = global.
 
     `match` JSONB: {classifications: [..]|null, min_confidence, max_confidence,
@@ -392,7 +497,7 @@ class EscalationRule(Base):
     )
 
 
-class ReplyDraft(Base):
+class ReplyDraft(OrgScoped, Base):
     """A validated, skeleton-rendered reply waiting for a human (M4.1 Copilot).
 
     Exactly one draft per inbound message (UNIQUE) — the insert is the generation
@@ -414,6 +519,18 @@ class ReplyDraft(Base):
     __tablename__ = "reply_drafts"
     __table_args__ = (
         UniqueConstraint("inbound_message_id", name="uq_reply_draft_inbound"),
+        # F-05 (findings/12): the ≤1-auto-reply-per-thread invariant, structural.
+        # The auto dispatch path stamps auto_sent at its CAS claim — before any
+        # I/O — so a second qualifying draft in the same thread trips this index
+        # instead of reaching SMTP, closing the read-then-act race between
+        # parallel workers. Released (pending/discarded) drafts clear auto_sent
+        # and free the reservation.
+        Index(
+            "uq_auto_reply_per_thread",
+            "enrollment_id",
+            unique=True,
+            postgresql_where=text("auto_sent AND enrollment_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -443,11 +560,12 @@ class ReplyDraft(Base):
     enrollment: Mapped[Enrollment | None] = relationship()
 
 
-class Mailbox(Base):
+class Mailbox(OrgScoped, Base):
     __tablename__ = "mailboxes"
+    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_mailbox_org_email"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
     smtp_host: Mapped[str | None] = mapped_column(Text)
     smtp_port: Mapped[int | None] = mapped_column(Integer)
     smtp_user: Mapped[str | None] = mapped_column(Text)
@@ -463,17 +581,23 @@ class Mailbox(Base):
     hard_bounces_today: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class SuppressionEntry(Base):
-    __tablename__ = "suppression_list"
+class SuppressionEntry(OrgScoped, Base):
+    """Per-org do-not-contact (⛔ Gate M5 Q1a). Surrogate PK since M5 — the
+    former `email` PK became UNIQUE(org_id, email). The optional cross-org
+    overlay lives in `global_suppression` and is checked additively."""
 
-    email: Mapped[str] = mapped_column(Text, primary_key=True)
+    __tablename__ = "suppression_list"
+    __table_args__ = (UniqueConstraint("org_id", "email", name="uq_suppression_org_email"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    email: Mapped[str] = mapped_column(Text, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)  # unsubscribe|bounce|manual|gdpr
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
 
 
-class AuditLog(Base):
+class AuditLog(OrgScoped, Base):
     __tablename__ = "audit_log"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -487,7 +611,7 @@ class AuditLog(Base):
     )
 
 
-class ReviewQueueItem(Base):
+class ReviewQueueItem(OrgScoped, Base):
     """Low-confidence classifications and validator failures land here for a human."""
 
     __tablename__ = "review_queue"
@@ -503,7 +627,11 @@ class ReviewQueueItem(Base):
     )
 
 
-class UnsubscribeToken(Base):
+class UnsubscribeToken(OrgScoped, Base):
+    """Org-scoped so `/u/{token}` (unauthenticated by RFC 8058 design) can
+    resolve the token unscoped, then enter the owning org's context before
+    suppressing — the token itself is the credential."""
+
     __tablename__ = "unsubscribe_tokens"
 
     token: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -529,12 +657,17 @@ class DeadLetter(Base):
     # the enrollment the task referenced, if any (plain id — no FK, so erasure and
     # enrollment deletion never trip over dead-letter rows)
     enrollment_id: Mapped[str | None] = mapped_column(Text)
+    # M5.1: opportunistic org attribution (plain nullable column, deliberately NOT
+    # OrgScoped — the task_failure signal handler may fire with no org context and
+    # must never lose a dead letter over tenancy stamping). The ops view returns
+    # the caller org's rows plus unattributed (NULL) infra failures.
+    org_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
     )
 
 
-class DryRun(Base):
+class DryRun(OrgScoped, Base):
     """A preflight run: the real pipeline for N sample leads, delivered to Mailpit only.
     Touches none of the production state (enrollments, messages, caps, bandit)."""
 
@@ -553,7 +686,7 @@ class DryRun(Base):
     items: Mapped[list["DryRunItem"]] = relationship(back_populates="dry_run")
 
 
-class DryRunItem(Base):
+class DryRunItem(OrgScoped, Base):
     """One sampled lead's trip through the dry-run pipeline. Holds lead PII (email,
     personalized copy), so erase_lead deletes these rows by lead_id."""
 
@@ -577,7 +710,140 @@ class DryRunItem(Base):
     dry_run: Mapped[DryRun] = relationship(back_populates="items")
 
 
-class ApiKey(Base):
+class DomainStat(OrgScoped, Base):
+    """Per-sending-domain, per-day deliverability rollup (M5.3): sends, hard
+    bounces, and spam bounces (the complaint proxy — bounces whose diagnostic
+    mentions spam/block/reputation; a real FBL feed is the future hook).
+    Written via Core INSERT..ON CONFLICT (deliverability/health.py) so
+    concurrent workers can't lose increments — Core statements bypass the ORM
+    tenancy stamp, so the writer stamps org_id explicitly."""
+
+    __tablename__ = "domain_stats"
+    __table_args__ = (
+        UniqueConstraint("org_id", "domain", "day", name="uq_domain_stats_org_domain_day"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    sends: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    hard_bounces: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    spam_bounces: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+
+class PlacementRun(OrgScoped, Base):
+    """An inbox-placement smoke test (M5.3): the campaign's opener skeleton with
+    constant sample fills, sent to operator-owned seed addresses through the
+    real send engine. Touches no campaign/org caps, no bandit, no enrollments,
+    no Message rows — placement_results are the only record."""
+
+    __tablename__ = "placement_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="running", server_default=text("'running'")
+    )  # running|complete|failed
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    results: Mapped[list["PlacementResult"]] = relationship(back_populates="run")
+
+
+class PlacementResult(OrgScoped, Base):
+    """One seed address's outcome in a placement run. `verdict` starts pending
+    and is set by the operator, who checks the seed inbox themselves (v1 is
+    manual marking; IMAP-crawl automation is future work — see
+    deliverability/placement.py)."""
+
+    __tablename__ = "placement_results"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seed_email", name="uq_placement_result_seed"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("placement_runs.id"), nullable=False, index=True
+    )
+    seed_email: Mapped[str] = mapped_column(Text, nullable=False)
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("mailboxes.id"))
+    verdict: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )  # pending|inbox|spam|missing
+    delivered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    marked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped[PlacementRun] = relationship(back_populates="results")
+
+
+class WebhookEndpoint(OrgScoped, Base):
+    """An outbound webhook subscription (M5.4). `url` is https-only and passes
+    the M0.5 SSRF guard at registration AND again at every delivery (DNS can
+    change). `secret_enc` is Fernet-encrypted like mailbox passwords; the
+    plaintext is shown once at creation and never echoed again (only a prefix).
+    `event_mask` is the JSONB list of subscribed event types — the registry
+    lives in craftsman/webhooks/events.py."""
+
+    __tablename__ = "webhook_endpoints"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    event_mask: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class WebhookDelivery(OrgScoped, Base):
+    """One event → one endpoint delivery attempt record (M5.4). Status walks
+    pending → delivered, or pending → failed after `webhook_max_attempts`
+    tries with exponential backoff (terminal failure also dead-letters via the
+    task_failure signal). `payload` is what was POSTed (inside the signed
+    envelope — see webhooks/delivery.py)."""
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        Index("ix_webhook_deliveries_endpoint_created", "endpoint_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    endpoint_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("webhook_endpoints.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )  # pending|delivered|failed
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApiKey(OrgScoped, Base):
     """A hashed, scoped API key. The plaintext token is shown once at creation;
     only its SHA-256 digest is stored here."""
 

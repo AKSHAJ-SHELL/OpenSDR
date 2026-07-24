@@ -8,6 +8,7 @@ import type {
   CampaignDetail,
   CampaignUpdate,
   DeliverabilityReport,
+  DomainHealth,
   DryRun,
   ImportResult,
   InboxMessage,
@@ -18,6 +19,8 @@ import type {
   SignalRule,
   Mailbox,
   Overview,
+  PlacementRun,
+  PlacementVerdict,
   ReplyDraft,
   ReviewAction,
   ReviewItem,
@@ -25,6 +28,8 @@ import type {
   SourcedPreview,
   SourceSearchRequest,
   Step,
+  UserOut,
+  Role,
   VariantDetail,
   VariantUpdate,
 } from "./types";
@@ -163,6 +168,16 @@ export const api = {
   mailboxes: () => get<Mailbox[]>("/mailboxes"),
   deliverability: (mailboxId: string) =>
     get<DeliverabilityReport>(`/mailboxes/${mailboxId}/deliverability`),
+  domainHealth: () => get<DomainHealth[]>("/deliverability/domains"),
+  placementRuns: () => get<PlacementRun[]>("/deliverability/placement"),
+  placementRun: (id: string) => get<PlacementRun>(`/deliverability/placement/${id}`),
+  startPlacement: (campaignId: string, seedEmails: string[]) =>
+    post<PlacementRun>("/deliverability/placement", {
+      campaign_id: campaignId,
+      seed_emails: seedEmails,
+    }),
+  markPlacement: (runId: string, marks: Record<string, Exclude<PlacementVerdict, "pending">>) =>
+    post<PlacementRun>(`/deliverability/placement/${runId}/mark`, { marks }),
   bandit: (campaignId: string) => get<ArmPosterior[]>(`/campaigns/${campaignId}/bandit`),
   activate: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/activate`),
   pause: (campaignId: string) => post<Campaign>(`/campaigns/${campaignId}/pause`),
@@ -190,6 +205,13 @@ export const api = {
   dialTask: (id: string) =>
     post<{ call_sid: string; to_operator: string }>(`/tasks/${id}/dial`),
   leadTimeline: (leadId: string) => get<TimelineItem[]>(`/leads/${leadId}/timeline`),
+  users: () => get<UserOut[]>("/users"),
+  createUser: (body: { email: string; role: Role; display_name?: string; password?: string }) =>
+    post<UserOut>("/users", body),
+  updateUser: (
+    id: string,
+    body: { role?: Role; display_name?: string; disabled?: boolean; password?: string },
+  ) => patch<UserOut>(`/users/${id}`, body),
 };
 
 export function apiBase() {

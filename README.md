@@ -10,7 +10,7 @@ Craftsman runs end-to-end outbound: leads in → researched, personalized sequen
 docker compose up
 ```
 
-That's the whole deployment. Bring your own Anthropic API key (or run the Ollama fallback for $0 marginal cost).
+That's the whole deployment. Bring your own LLM: Anthropic or OpenAI keys, or run Ollama locally for $0 marginal cost — `LLM_PROVIDER=anthropic | openai | ollama`.
 
 ## Why this exists
 
@@ -71,7 +71,7 @@ Key modules:
 | `craftsman/bandit/thompson.py` | The learning loop |
 | `craftsman/inbox/pipeline.py` | Reply → classify → state → bandit → handoff |
 | `craftsman/sender/smtp.py` | Suppression/cap/warmup/rate-limit checks + compliant headers |
-| `craftsman/llm/` | Provider-agnostic structured-output client (Claude default, Ollama fallback, mock for tests) |
+| `craftsman/llm/` | Provider-agnostic structured-output client (Claude, OpenAI/compatible, Ollama, mock for tests) |
 | `web/` | Next.js dashboard (Gojiberry-style agent UI) |
 
 ## Deliverability (read this before you send)
@@ -101,7 +101,9 @@ way to burn a domain, which is why verification gates enrollment and warmup gate
 
 ```bash
 cp .env.example .env
-# set ANTHROPIC_API_KEY (or LLM_PROVIDER=ollama) and generate CRAFTSMAN_SECRET_KEY:
+# pick an LLM: LLM_PROVIDER=ollama (local, no key), or anthropic/openai with the
+# matching API key set. OPENAI_BASE_URL accepts any OpenAI-compatible endpoint.
+# Then generate CRAFTSMAN_SECRET_KEY:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # --- auth setup (required) ---
@@ -244,9 +246,12 @@ cd web && npm install && npm run dev   # http://localhost:3000
 
 ## Authentication
 
-Every API endpoint requires an `Authorization: Bearer <key>` header, except `/health`
-and the RFC 8058 one-click unsubscribe at `/u/{token}` (which must stay anonymous). Keys
-are random `csk_…` tokens, stored only as a SHA-256 hash, and carry hierarchical scopes:
+Every API endpoint requires an `Authorization: Bearer <key>` header, except `/health`,
+the RFC 8058 one-click unsubscribe at `/u/{token}` (which must stay anonymous), the
+HMAC-gated Cal.com webhook, and the two OIDC SSO routes (`/auth/oidc/login|callback` —
+a browser mid-login cannot hold a key; they are gated by signed state and full id_token
+validation instead, and 503 until SSO is configured). Keys are random `csk_…` tokens,
+stored only as a SHA-256 hash, and carry hierarchical scopes:
 
 | Scope | Grants | Example routes |
 |---|---|---|
@@ -255,12 +260,57 @@ are random `csk_…` tokens, stored only as a SHA-256 hash, and carry hierarchic
 | `admin` | operate + manage secrets | mailboxes, `DELETE /leads/{id}/erase`, `/keys` |
 
 `admin` implies `operate` implies `read`. Create keys with
-`python -m craftsman.create_key --name <n> --scopes <...>` or, once you have an admin key,
-`POST /keys`. Revoke with `DELETE /keys/{id}`. The dashboard signs in a single admin
-(password hashed with scrypt in `DASHBOARD_PASSWORD_HASH`) and calls the API with a
-server-held key routed through a session-gated proxy — the key is never exposed to the
-browser. `/docs` and `/openapi.json` are gated behind `read`, so the API surface isn't
-enumerable without a key.
+`python -m craftsman.create_key --name <n> --scopes <...> [--org <slug>]` or, once you
+have an admin key, `POST /keys`. Revoke with `DELETE /keys/{id}`. `/docs` and
+`/openapi.json` are gated behind `read`, so the API surface isn't enumerable without a key.
+
+**Orgs (multi-tenancy, M5.1).** Every key, lead, campaign, mailbox, and suppression
+entry belongs to exactly one org, enforced centrally at the ORM session layer — a
+forgotten filter in any router fails closed instead of leaking, and the adversarial
+suite (`tests/adversarial/test_tenancy_isolation.py`) proves the boundary. A fresh
+install has one org (`default`); single-tenant self-hosters never need to think about
+it. Hosts create orgs and set per-org quotas (daily sends, mailbox count, enrichment
+budget) with `python -m craftsman.manage_org`; suppression is per-org with an optional
+cross-org overlay list (off by default).
+
+**Users, roles & SSO (M5.1b).** The dashboard signs in real users (`owner` /
+`operator` / `viewer` → `admin` / `operate` / `read`), managed at `/settings/users`
+and enforced both in the dashboard proxy and by the API's own scopes. Generic OIDC SSO
+(Google/Okta/Entra) is off until `OIDC_DISCOVERY_URL` + client credentials are set;
+unknown subjects are rejected unless `OIDC_AUTO_PROVISION` is enabled (viewer role).
+The legacy single-admin password (`DASHBOARD_PASSWORD_HASH`) still works as break-glass
+owner access. The dashboard calls the API with a server-held key routed through a
+session-gated proxy — neither the key nor any id_token is ever exposed to the browser.
+
+## Production deployment
+
+Two starting points ship in-repo (M5.4):
+
+- **Single host:** `docker compose -f docker-compose.prod.yml up -d` — the dev
+  stack minus Mailpit, with healthchecks and required-env fail-fast. Sending
+  requires real mailboxes (`POST /mailboxes` with real SMTP credentials).
+- **Kubernetes:** `deploy/helm/craftsman` — Deployments for api/worker/beat/web,
+  Services, an optional API Ingress, env from a pre-created Secret. Postgres and
+  Redis are deliberately **external** (managed services or your own
+  StatefulSets); the chart never runs databases. Validate with
+  `helm template deploy/helm/craftsman`.
+
+Both bind/serve plain HTTP — **TLS termination is yours** (reverse proxy or
+Ingress), and the exposure warning above applies doubly in production: the API
+holds mailbox credentials and can send mail as you. Runbooks — backup/restore
+(pg_dump + pgvector notes; Redis is rebuildable), horizontal worker scaling,
+webhook operations, migration policy for multi-replica, audit export/retention,
+and per-org quota administration — live in [`docs/operations.md`](docs/operations.md).
+An honest SOC 2 **alignment** (not certification) map is in
+[`docs/soc2-alignment.md`](docs/soc2-alignment.md).
+
+Outbound webhooks (`POST /webhooks`, admin) push `lead.status_changed`,
+`reply.received`, `meeting.updated`, `autopilot.sent`, and `escalation.fired`
+to your https endpoints, signed with HMAC-SHA256 over the raw body
+(`X-Craftsman-Signature-256` — the same scheme Craftsman verifies inbound from
+Cal.com). Endpoint URLs pass the SSRF guard at registration and again at every
+delivery; retries back off exponentially up to `WEBHOOK_MAX_ATTEMPTS`, then
+dead-letter.
 
 ## Testing
 

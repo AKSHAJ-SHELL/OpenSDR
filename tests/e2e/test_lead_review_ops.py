@@ -11,7 +11,6 @@ The guarantees under test:
 """
 
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -24,7 +23,6 @@ from craftsman.core.models import (
     ReviewQueueItem,
     SequenceStep,
     SuppressionEntry,
-    Variant,
 )
 
 SKELETON = (
@@ -166,7 +164,9 @@ def test_manual_suppress_keeps_row_and_is_idempotent(client, db, make_key):
 
     assert client.post(f"/leads/{lead.id}/suppress", headers=h).status_code == 204
     assert lead.status == "suppressed"
-    entry = db.get(SuppressionEntry, lead.email.lower())
+    entry = db.scalar(
+        select(SuppressionEntry).where(SuppressionEntry.email == lead.email.lower())
+    )
     assert entry is not None and entry.reason == "manual"
     # the row survives — this is not erasure
     assert db.get(Lead, lead.id) is not None

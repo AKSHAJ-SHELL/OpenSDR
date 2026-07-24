@@ -1,0 +1,64 @@
+# Craftsman Helm values — a minimal, readable starting point, not a platform.
+#
+# The chart deliberately does NOT run Postgres or Redis. Databases in the same
+# release lifecycle as the app are how data gets deleted by a `helm uninstall`:
+# your Postgres (pgvector) and Redis should be managed services or separately
+# operated StatefulSets with their own backup and upgrade story. Point the
+# connection URLs at them via the secret below. docs/operations.md covers
+# backup/restore and what Redis state is safe to lose.
+
+image:
+  repository: ghcr.io/your-org/craftsman   # build from the repo Dockerfile
+  tag: latest
+  pullPolicy: IfNotPresent
+
+webImage:
+  repository: ghcr.io/your-org/craftsman-web   # build from web/ (see web/Dockerfile)
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Name of a pre-created Secret in the release namespace holding the app env:
+#   DATABASE_URL              postgresql+psycopg://user:pass@host:5432/craftsman
+#   REDIS_URL                 redis://host:6379/0
+#   CRAFTSMAN_SECRET_KEY      Fernet key (mailbox credentials + webhook secrets at rest)
+#   ANTHROPIC_API_KEY         (or OPENAI_API_KEY, or LLM_PROVIDER=ollama + OLLAMA_BASE_URL)
+#   CRAFTSMAN_API_KEY         dashboard's server-side API key
+#   DASHBOARD_PASSWORD_HASH   scrypt hash (see README auth setup)
+#   DASHBOARD_SESSION_SECRET  cookie-signing secret
+# Create it out-of-band:  kubectl create secret generic craftsman-env --from-env-file=.env
+existingSecret: craftsman-env
+
+# Extra non-secret environment for the Python components (api/worker/beat).
+env: {}
+#  LLM_PROVIDER: anthropic
+
+api:
+  replicas: 1
+  port: 8000
+  # The API runs `alembic upgrade head` on startup. With >1 replica, move
+  # migrations to a one-shot Job so replicas don't race (docs/operations.md).
+  resources: {}
+
+worker:
+  replicas: 1   # workers are stateless — scale horizontally (docs/operations.md)
+  queues: research,generate,send,inbox,enrich,settle
+  concurrency: 4
+  resources: {}
+
+beat:
+  # exactly ONE beat, ever — it is the schedule's single writer
+  resources: {}
+
+web:
+  replicas: 1
+  port: 3000
+  resources: {}
+
+ingress:
+  enabled: false
+  className: ""
+  host: craftsman.example.com
+  # TLS terminates at the ingress — the pods speak plain HTTP among themselves.
+  tls: []
+  #  - secretName: craftsman-tls
+  #    hosts: [craftsman.example.com]

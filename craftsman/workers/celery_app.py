@@ -25,6 +25,7 @@ def _record_dead_letter(sender=None, task_id=None, exception=None, args=None,
     fires only after retries are exhausted). Best-effort — never mask the real error."""
     from craftsman.core.db import session_scope
     from craftsman.core.models import DeadLetter
+    from craftsman.core.tenancy import current_org_id
 
     try:
         with session_scope() as db:
@@ -37,6 +38,9 @@ def _record_dead_letter(sender=None, task_id=None, exception=None, args=None,
                 traceback=str(einfo) if einfo is not None else None,
                 # our tasks take enrollment_id / lead_id as the first positional arg
                 enrollment_id=str(args[0]) if args else None,
+                # best-effort org attribution (M5.1); None = unattributed infra
+                # failure, deliberately never a reason to lose the record
+                org_id=current_org_id(),
             ))
     except Exception as e:  # noqa: BLE001
         log.warning("failed to record dead letter for %s: %s", getattr(sender, "name", "?"), e)
@@ -58,6 +62,7 @@ app.conf.update(
         "craftsman.workers.tasks.poll_inboxes": {"queue": "inbox"},
         "craftsman.workers.tasks.settle_bandit": {"queue": "settle"},
         "craftsman.workers.tasks.redrive_unsent": {"queue": "settle"},
+        "craftsman.workers.tasks.deliver_webhook": {"queue": "settle"},
         "craftsman.workers.tasks.sequencer_tick": {"queue": "send"},
         "craftsman.workers.tasks.collect_signals": {"queue": "research"},
     },

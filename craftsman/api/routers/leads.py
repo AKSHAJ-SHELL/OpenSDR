@@ -321,7 +321,18 @@ def suppress_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     lead = db.get(Lead, lead_id)
     if lead is None:
         raise HTTPException(404, "lead not found")
+    from_status = lead.status
     suppress(db, lead.email, reason="manual")
+    # M5.4: lead.status_changed — emitted from HERE and the reply pipeline's
+    # state transitions only (granularity documented in webhooks/events.py)
+    from craftsman.webhooks.events import safe_emit
+
+    safe_emit(db, "lead.status_changed", {
+        "lead_id": str(lead.id),
+        "from_state": from_status,
+        "to_state": "suppressed",
+        "reason": "manual",
+    })
 
 
 @router.delete("/{lead_id}/erase", status_code=204, dependencies=[Depends(require_scope("admin"))])

@@ -33,15 +33,19 @@ def _drop_campaign(engine, cid):
             s.commit()
 
 
-def test_cap_holds_under_concurrent_reservations(engine):
+def test_cap_holds_under_concurrent_reservations(engine, default_org_ctx):
     """Predict: with cap=5 and 12 racing workers, exactly 5 reservations succeed —
     the atomic UPDATE's row lock serializes them, so no over-send."""
+    from craftsman.core.tenancy import DEFAULT_ORG_ID, org_context
+
     cap = 5
     workers = 12
     cid = _make_campaign(engine, cap)
     try:
         def reserve_once(_):
-            with Session(bind=engine) as s:
+            # threads start with an empty contextvars context — enter the org
+            # explicitly, exactly like a Celery worker task does (M5.1)
+            with org_context(DEFAULT_ORG_ID), Session(bind=engine) as s:
                 camp = s.get(Campaign, cid)
                 ok = reserve_campaign_slot(s, camp)
                 s.commit()
@@ -57,7 +61,7 @@ def test_cap_holds_under_concurrent_reservations(engine):
         _drop_campaign(engine, cid)
 
 
-def test_reserve_then_release_frees_the_slot(engine):
+def test_reserve_then_release_frees_the_slot(engine, default_org_ctx):
     cid = _make_campaign(engine, cap=1)
     try:
         with Session(bind=engine) as s:
@@ -76,7 +80,7 @@ def test_reserve_then_release_frees_the_slot(engine):
         _drop_campaign(engine, cid)
 
 
-def test_release_never_goes_negative(engine):
+def test_release_never_goes_negative(engine, default_org_ctx):
     cid = _make_campaign(engine, cap=5)
     try:
         with Session(bind=engine) as s:

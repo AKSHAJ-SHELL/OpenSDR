@@ -144,6 +144,138 @@ def test_thread_invariant_across_many_replies(db, wired):
     assert statuses == ["sent", "pending", "pending", "pending"]
 
 
+# Predicted (F-05, findings/12): the thread invariant is structural, not
+# read-then-act. Model the audited race — two qualifying drafts whose policy
+# evaluations BOTH read zero prior auto-replies — by dispatching both directly
+# with auto=True. The second dispatch must die at its claim (partial unique
+# index uq_auto_reply_per_thread), before any delivery: exactly one email ever,
+# the loser stays a pending draft for a human. A human click on that pending
+# draft still works — the reservation binds autonomy only.
+# (Raw engine sessions with real commits, like test_send_concurrency — the
+# claim's IntegrityError rollback cannot run inside the transactional fixture.)
+def test_thread_invariant_survives_concurrent_claim_race(engine, monkeypatch, default_org_ctx):
+    import asyncio
+
+    from sqlalchemy.orm import Session
+
+    from craftsman.sender.reply import DraftUnavailable, send_reply_draft
+
+    delivered = []
+
+    async def _capture(mailbox, msg):
+        delivered.append(msg)
+
+    monkeypatch.setattr("craftsman.sender.reply.deliver", _capture)
+    monkeypatch.setattr("craftsman.sender.reply.acquire_send_slot", lambda *a, **k: 0.0)
+
+    with Session(bind=engine) as s:
+        enr, lead, campaign, mailbox, outbound, inbound, _ = _scenario(s)
+        _arm(s, campaign)
+        second = Message(
+            enrollment_id=enr.id, direction="inbound", mailbox_id=mailbox.id,
+            subject="Re: quick idea for Acme", body="Also, one more question?",
+            smtp_message_id=f"<race-{uuid.uuid4().hex[:6]}@acme.test>",
+            classification="interested", classification_confidence=0.99,
+        )
+        s.add(second)
+        s.flush()
+        # both drafts pending at once — the state two racing workers see after
+        # both policy evaluations read prior_auto_replies == 0
+        draft_a = ReplyDraft(
+            inbound_message_id=inbound.id, enrollment_id=enr.id,
+            skeleton_key="reply_interested", status="pending",
+            body="Happy to show you how the picking flow works. Worth a look?",
+        )
+        draft_b = ReplyDraft(
+            inbound_message_id=second.id, enrollment_id=enr.id,
+            skeleton_key="reply_interested", status="pending",
+            body="Happy to show you how the picking flow works. Worth a look?",
+        )
+        s.add_all([draft_a, draft_b])
+        s.commit()
+        enr_id, a_id, b_id = enr.id, draft_a.id, draft_b.id
+        lead_id, campaign_id, mailbox_id, company_id = (
+            lead.id, campaign.id, mailbox.id, lead.company_id,
+        )
+
+    try:
+        with Session(bind=engine) as s:
+            asyncio.run(send_reply_draft(s, s.get(ReplyDraft, a_id), auto=True))
+        assert len(delivered) == 1
+
+        with Session(bind=engine) as s:
+            with pytest.raises(DraftUnavailable):
+                asyncio.run(send_reply_draft(s, s.get(ReplyDraft, b_id), auto=True))
+        assert len(delivered) == 1  # the index refused BEFORE delivery
+
+        with Session(bind=engine) as s:
+            b = s.get(ReplyDraft, b_id)
+            assert b.status == "pending" and b.auto_sent is False
+            # a human may still answer — the guard binds autonomy only
+            asyncio.run(send_reply_draft(s, b, auto=False))
+        assert len(delivered) == 2
+        with Session(bind=engine) as s:
+            b = s.get(ReplyDraft, b_id)
+            assert b.status == "sent" and b.auto_sent is False
+    finally:
+        # real commits — remove every row this test created so global assertions
+        # elsewhere in the run never see them
+        with Session(bind=engine) as s:
+            from craftsman.core.models import (
+                AuditLog, Company, Enrollment, Lead, Mailbox, SequenceStep, Variant,
+            )
+            from craftsman.core.models import Campaign as C
+
+            s.query(AuditLog).filter_by(enrollment_id=enr_id).delete()
+            s.query(ReplyDraft).filter_by(enrollment_id=enr_id).delete()
+            s.query(Message).filter_by(enrollment_id=enr_id).delete()
+            s.query(Enrollment).filter_by(id=enr_id).delete()
+            s.query(Lead).filter_by(id=lead_id).delete()
+            s.query(Variant).filter(
+                Variant.step_id.in_(
+                    s.query(SequenceStep.id).filter_by(campaign_id=campaign_id)
+                )
+            ).delete(synchronize_session=False)
+            s.query(SequenceStep).filter_by(campaign_id=campaign_id).delete()
+            s.query(C).filter_by(id=campaign_id).delete()
+            s.query(Mailbox).filter_by(id=mailbox_id).delete()
+            s.query(Company).filter_by(id=company_id).delete()
+            s.commit()
+
+
+# Predicted (F-05): a failed auto delivery FREES the thread reservation — the
+# draft returns to pending with auto_sent cleared, so autonomy (or a human) can
+# retry later instead of the thread being dead-locked by a crashed send.
+def test_failed_auto_delivery_frees_the_thread_reservation(db, wired, monkeypatch):
+    import asyncio
+
+    from craftsman.sender.reply import send_reply_draft
+
+    llm, delivered = wired
+    enr, lead, campaign, mailbox, outbound, inbound, _ = _scenario(db)
+    _arm(db, campaign)
+
+    async def _boom(mailbox, msg):
+        raise RuntimeError("smtp down")
+
+    monkeypatch.setattr("craftsman.sender.reply.deliver", _boom)
+    llm.enqueue(GOOD_FILL)
+    task_mod.generate_reply_draft.run(str(inbound.id))  # auto attempt fails
+    draft = db.scalar(
+        select(ReplyDraft).where(ReplyDraft.inbound_message_id == inbound.id)
+    )
+    assert draft.status == "pending" and draft.auto_sent is False
+    assert delivered == []
+
+    async def _capture(mailbox, msg):
+        delivered.append(msg)
+
+    monkeypatch.setattr("craftsman.sender.reply.deliver", _capture)
+    asyncio.run(send_reply_draft(db, draft, auto=True))  # reservation was free
+    db.refresh(draft)
+    assert delivered and draft.status == "sent" and draft.auto_sent is True
+
+
 # Predicted: a validator-rejected fill can NEVER be auto-sent — autonomy sits
 # strictly downstream of the same gates, so an obedient-to-injection LLM under
 # Autopilot yields a failed draft and zero deliveries.

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from craftsman.api.deps import get_db
 from craftsman.core.models import ApiKey
+from craftsman.core.tenancy import set_request_org, unscoped_context
 
 TOKEN_PREFIX = "csk_"
 SCOPES: tuple[str, ...] = ("read", "operate", "admin")
@@ -67,15 +68,21 @@ def require_scope(scope: str):
     if scope not in _RANK:
         raise ValueError(f"unknown scope: {scope!r}")
 
-    def dependency(
+    async def dependency(
         credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
         db: Session = Depends(get_db),
     ) -> ApiKey:
+        # async ON PURPOSE (M5.1): it runs in the request task's context, so the
+        # org contextvar set here propagates into the threadpool that executes
+        # sync endpoints. A sync dependency's context mutations are discarded.
         if credentials is None or not credentials.credentials:
             raise _unauthorized("missing API key")
-        api_key = db.scalar(
-            select(ApiKey).where(ApiKey.key_hash == hash_token(credentials.credentials))
-        )
+        # the key lookup is how we DISCOVER the org — the one justified unscoped
+        # read on the request path; the hash is unguessable, nothing is echoed
+        with unscoped_context():
+            api_key = db.scalar(
+                select(ApiKey).where(ApiKey.key_hash == hash_token(credentials.credentials))
+            )
         if api_key is None or api_key.revoked_at is not None:
             raise _unauthorized("invalid or revoked API key")
         if not has_scope(list(api_key.scopes), scope):
@@ -83,6 +90,8 @@ def require_scope(scope: str):
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"this key lacks the required '{scope}' scope",
             )
+        # every ORM statement for the rest of this request is scoped to this org
+        set_request_org(api_key.org_id)
         api_key.last_used_at = datetime.now(timezone.utc)
         db.add(api_key)
         return api_key

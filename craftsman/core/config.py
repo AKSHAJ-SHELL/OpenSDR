@@ -6,10 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # LLM
+    # LLM — pick one provider; ollama is the $0 no-key path, openai works with
+    # any OpenAI-compatible endpoint via `openai_base_url`.
+    llm_provider: str = "anthropic"  # anthropic | openai | ollama | mock
     anthropic_api_key: str = ""
-    llm_provider: str = "anthropic"  # anthropic | ollama | mock
     anthropic_model: str = "claude-sonnet-4-6"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:14b"
 
@@ -84,6 +88,43 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_from_number: str = ""
     twilio_operator_number: str = ""
+
+    # Multi-tenancy (M5.1, ⛔ Gate M5 Q1a). The overlay list suppresses across
+    # ALL orgs when enabled (shared-infra hosts); org lists can never shadow it.
+    # `unsubscribe_propagate_global` additionally writes each unsubscribe to the
+    # overlay — off by default: it makes one tenant's unsubscribe affect all.
+    global_suppression_enabled: bool = False
+    unsubscribe_propagate_global: bool = False
+
+    # Deliverability suite (M5.3, G12). `blocklist_zones` are the DNSBL zones the
+    # per-domain health check queries — pure DNS, no HTTP, hence SSRF-guard-exempt.
+    # ⛔ `domain_pause_bounce_threshold` default (5 hard+spam bounces per domain per
+    # day → auto-pause every mailbox on the domain) is the gate-approved value;
+    # 0 disables auto-pause. `domain_min_interval_s` is the domain-level token
+    # bucket wrapping the per-mailbox one; 0 (default) disables it entirely.
+    blocklist_zones: str = "zen.spamhaus.org,bl.spamcop.net"
+    domain_pause_bounce_threshold: int = 5
+    domain_min_interval_s: float = 0.0
+
+    # Platform operations (M5.4). `webhook_max_attempts` bounds outbound webhook
+    # delivery tries (exponential backoff 30s→1h between them); exhaustion marks
+    # the delivery failed and dead-letters it. `audit_retention_days` > 0 makes
+    # the daily reset sweep delete each org's audit_log rows older than the
+    # cutoff; 0 (default) keeps the audit log forever.
+    webhook_max_attempts: int = 8
+    audit_retention_days: int = 0
+
+    # OIDC SSO (M5.1b, generic — Google/Okta/Entra docs in README). Empty
+    # discovery URL = SSO off; password login always works as break-glass.
+    oidc_discovery_url: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_url: str = "http://localhost:8000/auth/oidc/callback"
+    # where the SSO callback sends the browser (login-code handoff + error pages)
+    dashboard_base_url: str = "http://localhost:3000"
+    # JIT provisioning of unknown-but-authenticated subjects, default OFF —
+    # unknown subjects are rejected until an owner invites them (role: viewer).
+    oidc_auto_provision: bool = False
 
     # Secrets
     craftsman_secret_key: str = ""

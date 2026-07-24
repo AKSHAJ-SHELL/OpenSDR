@@ -1,0 +1,126 @@
+# Production compose profile (M5.4).
+#
+# Differences from the dev docker-compose.yml, on purpose:
+#   - NO MailPIT. There is no mail sandbox here: sending requires real mailboxes
+#     (POST /mailboxes with real SMTP credentials — creds live encrypted in
+#     Postgres, not in env). Leave MAILPIT_URL unset; if you use dry runs in
+#     prod, point MAILPIT_SMTP_HOST/PORT at a relay or sink YOU operate.
+#   - Healthchecks on every long-running service.
+#   - Postgres is NOT port-published at all — only the containers reach it.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  EXPOSURE WARNING (the M0.1 warning, louder):                           │
+# │  Every service below binds 127.0.0.1 ONLY. That is deliberate.          │
+# │  This file provides NO TLS. Put a reverse proxy (Caddy, nginx,          │
+# │  Traefik) in front of 127.0.0.1:8000 (API) and 127.0.0.1:3000           │
+# │  (dashboard) to terminate TLS — or keep both behind a VPN.              │
+# │  NEVER change these to 0.0.0.0: the API holds mailbox credentials       │
+# │  and can send email as you.                                             │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Required in .env (compose fails fast on the ones marked :?):
+#   POSTGRES_PASSWORD, CRAFTSMAN_SECRET_KEY, an LLM (ANTHROPIC_API_KEY or
+#   OPENAI_API_KEY or LLM_PROVIDER=ollama), CRAFTSMAN_API_KEY, DASHBOARD_PASSWORD_HASH,
+#   DASHBOARD_SESSION_SECRET — see README "Authentication".
+#
+# Run:  docker compose -f docker-compose.prod.yml up -d
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: craftsman
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: craftsman
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U craftsman"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn craftsman.api.app:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:?}@postgres:5432/craftsman
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"   # TLS via your reverse proxy — see the warning above
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: celery -A craftsman.workers.celery_app worker -Q research,generate,send,inbox,enrich,settle -l info --concurrency=4
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:?}@postgres:5432/craftsman
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A craftsman.workers.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  beat:
+    build: .
+    # exactly one beat — it is the schedule's single writer; never scale it
+    command: celery -A craftsman.workers.celery_app beat -l info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://craftsman:${POSTGRES_PASSWORD:?}@postgres:5432/craftsman
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: https://your-api-domain.example   # the public URL your proxy serves
+    environment:
+      API_URL: http://api:8000
+      CRAFTSMAN_API_KEY: ${CRAFTSMAN_API_KEY:?set CRAFTSMAN_API_KEY in .env}
+      DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?set DASHBOARD_PASSWORD_HASH in .env}
+      DASHBOARD_SESSION_SECRET: ${DASHBOARD_SESSION_SECRET:?set DASHBOARD_SESSION_SECRET in .env}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"   # TLS via your reverse proxy — see the warning above
+    restart: unless-stopped
+
+volumes:
+  pgdata:
