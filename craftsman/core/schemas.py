@@ -669,3 +669,69 @@ class DeadLetterOut(BaseModel):
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- users & SSO (M5.1b)
+
+
+class UserOut(BaseModel):
+    id: uuid.UUID
+    email: EmailStr
+    display_name: str | None = None
+    role: Literal["owner", "operator", "viewer"]
+    has_password: bool = False
+    sso_linked: bool = False
+    disabled_at: datetime | None = None
+    last_login_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    role: Literal["owner", "operator", "viewer"] = "viewer"
+    display_name: str | None = None
+    # optional initial password; omitted = SSO-only until an owner sets one
+    password: str | None = Field(default=None, min_length=12)
+
+
+class UserUpdate(BaseModel):
+    role: Literal["owner", "operator", "viewer"] | None = None
+    display_name: str | None = None
+    disabled: bool | None = None
+    password: str | None = Field(default=None, min_length=12)
+
+
+class CredentialsIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class CredentialVerifyOut(BaseModel):
+    user_id: uuid.UUID
+    email: EmailStr
+    role: Literal["owner", "operator", "viewer"]
+    display_name: str | None = None
+
+
+class SsoExchangeIn(BaseModel):
+    code: str
+
+
+class SsoStatusOut(BaseModel):
+    enabled: bool
+
+
+class OrgOut(BaseModel):
+    """The caller's own org: identity, quotas (null = unlimited), and today's
+    usage. Quotas are set by the INSTANCE operator (python -m craftsman.manage_org),
+    not by the tenant — this view is read-only on purpose."""
+
+    id: uuid.UUID
+    name: str
+    slug: str
+    daily_send_cap: int | None = None
+    sent_today: int = 0
+    max_mailboxes: int | None = None
+    mailbox_count: int = 0
+    enrichment_daily_budget: int | None = None
+    enrichment_calls_today: int = 0

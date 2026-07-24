@@ -98,6 +98,8 @@ class Settings(BaseSettings):
     oidc_client_id: str = ""
     oidc_client_secret: str = ""
     oidc_redirect_url: str = "http://localhost:8000/auth/oidc/callback"
+    # where the SSO callback sends the browser (login-code handoff + error pages)
+    dashboard_base_url: str = "http://localhost:3000"
     # JIT provisioning of unknown-but-authenticated subjects, default OFF —
     # unknown subjects are rejected until an owner invites them (role: viewer).
     oidc_auto_provision: bool = False

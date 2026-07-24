@@ -15,8 +15,11 @@ from craftsman.api.routers import (
     mailboxes,
     meetings,
     ops,
+    org,
+    sso,
     tasks,
     unsubscribe,
+    users,
 )
 
 
@@ -64,6 +67,9 @@ app.include_router(keys.router)
 app.include_router(ops.router)
 app.include_router(tasks.router)
 app.include_router(unsubscribe.router)
+app.include_router(users.router)
+app.include_router(sso.router)
+app.include_router(org.router)
 
 
 @app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(require_scope("read"))])

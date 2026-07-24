@@ -16,7 +16,15 @@ from craftsman.api.app import app
 #   /u/{token} — RFC 8058 requires an unauthenticated one-click unsubscribe POST
 #   /meetings/webhooks/calcom — Cal.com can't hold an API key; gated by HMAC-SHA256
 #     over the raw body instead, and 503-off until CALCOM_WEBHOOK_SECRET is set
-UNAUTH_ALLOWLIST = {"/health", "/u/{token}", "/meetings/webhooks/calcom"}
+UNAUTH_ALLOWLIST = {
+    "/health",
+    "/u/{token}",
+    "/meetings/webhooks/calcom",
+    # M5.1b (⛔ Gate M5 Q3): a browser mid-SSO-login cannot hold an API key —
+    # these are gated by signed state + full id_token validation, 503 keyless
+    "/auth/oidc/login",
+    "/auth/oidc/callback",
+}
 
 
 def _concrete(path: str) -> str:
