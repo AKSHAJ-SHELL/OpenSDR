@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     global_suppression_enabled: bool = False
     unsubscribe_propagate_global: bool = False
 
+    # Deliverability suite (M5.3, G12). `blocklist_zones` are the DNSBL zones the
+    # per-domain health check queries — pure DNS, no HTTP, hence SSRF-guard-exempt.
+    # ⛔ `domain_pause_bounce_threshold` default (5 hard+spam bounces per domain per
+    # day → auto-pause every mailbox on the domain) is the gate-approved value;
+    # 0 disables auto-pause. `domain_min_interval_s` is the domain-level token
+    # bucket wrapping the per-mailbox one; 0 (default) disables it entirely.
+    blocklist_zones: str = "zen.spamhaus.org,bl.spamcop.net"
+    domain_pause_bounce_threshold: int = 5
+    domain_min_interval_s: float = 0.0
+
     # OIDC SSO (M5.1b, generic — Google/Okta/Entra docs in README). Empty
     # discovery URL = SSO off; password login always works as break-glass.
     oidc_discovery_url: str = ""

@@ -26,7 +26,6 @@ from craftsman.core.models import (
     Mailbox,
     Message,
     Org,
-    SuppressionEntry,
 )
 from craftsman.core.tenancy import (
     DEFAULT_ORG_ID,
@@ -249,9 +248,7 @@ def test_fail_closed_without_context(db, two_orgs):
         with pytest.raises(TenancyError):
             db.scalars(select(Lead)).all()
         with pytest.raises(TenancyError):
-            db.execute(
-                Lead.__table__.select()
-            ) if False else db.scalars(select(Campaign)).all()
+            db.scalars(select(Campaign)).all()
 
 
 # Predicted: cross-org ORM writes are refused at flush — org B's context can

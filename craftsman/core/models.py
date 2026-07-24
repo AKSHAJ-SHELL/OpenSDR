@@ -1,11 +1,12 @@
 """SQLAlchemy models — mirrors the design doc schema exactly."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -707,6 +708,86 @@ class DryRunItem(OrgScoped, Base):
     error: Mapped[str | None] = mapped_column(Text)
 
     dry_run: Mapped[DryRun] = relationship(back_populates="items")
+
+
+class DomainStat(OrgScoped, Base):
+    """Per-sending-domain, per-day deliverability rollup (M5.3): sends, hard
+    bounces, and spam bounces (the complaint proxy — bounces whose diagnostic
+    mentions spam/block/reputation; a real FBL feed is the future hook).
+    Written via Core INSERT..ON CONFLICT (deliverability/health.py) so
+    concurrent workers can't lose increments — Core statements bypass the ORM
+    tenancy stamp, so the writer stamps org_id explicitly."""
+
+    __tablename__ = "domain_stats"
+    __table_args__ = (
+        UniqueConstraint("org_id", "domain", "day", name="uq_domain_stats_org_domain_day"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    domain: Mapped[str] = mapped_column(Text, nullable=False)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    sends: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    hard_bounces: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    spam_bounces: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+
+class PlacementRun(OrgScoped, Base):
+    """An inbox-placement smoke test (M5.3): the campaign's opener skeleton with
+    constant sample fills, sent to operator-owned seed addresses through the
+    real send engine. Touches no campaign/org caps, no bandit, no enrollments,
+    no Message rows — placement_results are the only record."""
+
+    __tablename__ = "placement_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("campaigns.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="running", server_default=text("'running'")
+    )  # running|complete|failed
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    results: Mapped[list["PlacementResult"]] = relationship(back_populates="run")
+
+
+class PlacementResult(OrgScoped, Base):
+    """One seed address's outcome in a placement run. `verdict` starts pending
+    and is set by the operator, who checks the seed inbox themselves (v1 is
+    manual marking; IMAP-crawl automation is future work — see
+    deliverability/placement.py)."""
+
+    __tablename__ = "placement_results"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seed_email", name="uq_placement_result_seed"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("placement_runs.id"), nullable=False, index=True
+    )
+    seed_email: Mapped[str] = mapped_column(Text, nullable=False)
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("mailboxes.id"))
+    verdict: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )  # pending|inbox|spam|missing
+    delivered: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    marked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped[PlacementRun] = relationship(back_populates="results")
 
 
 class ApiKey(OrgScoped, Base):

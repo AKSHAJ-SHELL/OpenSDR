@@ -9,6 +9,7 @@ from craftsman.api.auth import require_scope
 from craftsman.api.routers import (
     analytics,
     campaigns,
+    deliverability,
     inbox,
     keys,
     leads,
@@ -61,6 +62,7 @@ app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(inbox.router)
 app.include_router(mailboxes.router)
+app.include_router(deliverability.router)
 app.include_router(analytics.router)
 app.include_router(meetings.router)
 app.include_router(keys.router)

@@ -489,6 +489,9 @@ change these thresholds to make a test pass** — they encode product behavior.
 | `autopilot_min_confidence` ⛔ | 0.9 — below this Guarded Autopilot never fires | config (⛔ Gate M4 Option B) |
 | Autopilot enable/disable | per-campaign `autopilot_enabled` (default false, migration `0014`); enable = **admin** scope (deliberate friction), disable = operate (instant kill switch); both audit-logged | `/campaigns/{id}/autopilot/*` (M4.4) |
 | Autopilot invariants (not knobs) | ≤ 1 auto-reply per thread ever (reply-to-auto-reply always escalates); only the 3 deterministic skeletons; validator gates apply unchanged; escalation `block_autopilot` vetoes; lead-local business hours | `inbox/autopilot.py` — `MAX_AUTO_REPLIES_PER_THREAD` is a constant; **structural since M5**: the auto dispatch claim stamps `auto_sent` before I/O under partial unique index `uq_auto_reply_per_thread` (migration `0015`, F-05 in findings/12), so racing workers cannot double-send |
+| `blocklist_zones` | `zen.spamhaus.org,bl.spamcop.net` — DNSBL zones for the per-domain health check; pure DNS (no HTTP), deliberately SSRF-guard-exempt | config; `deliverability/health.py`, `GET /deliverability/domains` (M5.3) |
+| `domain_pause_bounce_threshold` ⛔ | 5 hard+spam bounces per sending domain per day → auto-pause every mailbox on that domain (audit event `domain_auto_paused` + urgent notify); 0 disables; un-pause is an explicit `PATCH /mailboxes` health edit | config (⛔ Gate M5 approved); `deliverability/health.py` (M5.3) |
+| `domain_min_interval_s` | 0 (domain-level token bucket **off**) — when set, a per-domain minimum send interval wraps the per-mailbox 45–90s bucket on both the campaign and reply send paths | config; `sender/limiter.py acquire_domain_slot` (M5.3) |
 
 ---
 

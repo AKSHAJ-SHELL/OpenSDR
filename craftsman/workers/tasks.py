@@ -288,6 +288,10 @@ def generate_and_send(self, enrollment_id: str):
         db.add(claim)
         mailbox.sent_today += 1
         db.add(mailbox)
+        from craftsman.deliverability.health import record_domain_send
+        from craftsman.ingest.verify import domain_of
+
+        record_domain_send(db, domain_of(mailbox.email))  # M5.3 per-domain rollup
         enrollment.current_step = step_order  # record which step was actually sent
         apply_event(db, enrollment, Event.SEND_OK, detail={"step": step_order})
         schedule_next_step(db, enrollment, wait_days, lead.timezone)
@@ -746,6 +750,24 @@ def run_dry_run(dry_run_id: str):
             run.error = str(e)
         run.finished_at = datetime.now(timezone.utc)
         db.add(run)
+
+
+# ------------------------------------------------------------------ placement (M5.3)
+
+
+@app.task
+def run_placement(run_id: str):
+    """Inbox placement smoke test: deliver the campaign opener (constant sample
+    fills, no LLM) to the run's operator-owned seed addresses through the real
+    send engine. Touches mailbox rate slots and sent_today only — never campaign/
+    org caps, bandit, enrollments, or Message rows (deliverability/placement.py)."""
+    from craftsman.core.models import PlacementRun
+    from craftsman.deliverability.placement import execute_placement_run
+
+    with _org_task_scope(PlacementRun, run_id) as (db, run):
+        if run is None or run.status != "running":
+            return
+        _run(execute_placement_run(db, run))
 
 
 # ------------------------------------------------------------------ enrich

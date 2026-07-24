@@ -367,6 +367,70 @@ class DeliverabilityReport(BaseModel):
     warmup: WarmupOut
 
 
+# ---------------------------------------------------------------- deliverability suite (M5.3)
+
+
+class BlocklistOut(BaseModel):
+    zone: str
+    status: str  # listed | clear | error ("couldn't check", never a listing)
+    listed_ips: list[str] = []
+
+
+class DomainStats7dOut(BaseModel):
+    sends: int
+    hard_bounces: int
+    spam_bounces: int  # complaint proxy — see deliverability/health.py
+    bounce_rate: float
+    complaint_rate: float
+
+
+class DomainHealthOut(BaseModel):
+    domain: str
+    score: int  # 0-100, formula in deliverability/health.py docstring
+    components: dict[str, int]  # points deducted per factor; 0 = clean
+    mailboxes: int
+    paused_mailboxes: int
+    spf: DnsRecordOut
+    dmarc: DmarcOut
+    dkim: DkimOut
+    blocklists: list[BlocklistOut]
+    stats_7d: DomainStats7dOut
+
+
+class PlacementCreate(BaseModel):
+    campaign_id: uuid.UUID
+    # ≤10 operator-owned seed addresses; schema-enforced so oversized or
+    # non-email payloads never reach the send path
+    seed_emails: list[EmailStr] = Field(min_length=1, max_length=10)
+
+
+class PlacementMarkRequest(BaseModel):
+    marks: dict[str, Literal["inbox", "spam", "missing"]]  # seed_email → verdict
+
+
+class PlacementResultOut(BaseModel):
+    id: uuid.UUID
+    seed_email: str
+    verdict: str  # pending|inbox|spam|missing
+    delivered: bool
+    error: str | None = None
+    marked_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PlacementRunOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID
+    status: str  # running|complete|failed
+    error: str | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
+    results: list[PlacementResultOut] = []
+
+    model_config = {"from_attributes": True}
+
+
 
 class MessageOut(BaseModel):
     id: uuid.UUID

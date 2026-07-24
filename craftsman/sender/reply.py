@@ -22,7 +22,9 @@ from sqlalchemy.orm import Session
 
 from craftsman.compliance.suppression import is_suppressed
 from craftsman.core.models import Campaign, Enrollment, Lead, Mailbox, Message, ReplyDraft
-from craftsman.sender.limiter import acquire_send_slot
+from craftsman.deliverability.health import record_domain_send
+from craftsman.ingest.verify import domain_of
+from craftsman.sender.limiter import acquire_domain_slot, acquire_send_slot
 from craftsman.sender.smtp import (
     PreparedEmail,
     SendBlocked,
@@ -165,6 +167,10 @@ async def send_reply_draft(
         if wait > 0:
             _release(db, draft, "pending")
             raise SendBlocked("rate_limited", retry_in=wait)
+        wait = acquire_domain_slot(domain_of(mailbox.email))
+        if wait > 0:
+            _release(db, draft, "pending")
+            raise SendBlocked("domain_rate_limited", retry_in=wait)
 
         subject = inbound.subject or (anchor.subject if anchor else "") or ""
         if subject and not subject.lower().startswith("re:"):
@@ -201,6 +207,7 @@ async def send_reply_draft(
         db.add(outbound)
         mailbox.sent_today += 1
         db.add(mailbox)
+        record_domain_send(db, domain_of(mailbox.email))  # M5.3 per-domain rollup
         draft.status = "edited_sent" if edited else "sent"
         draft.auto_sent = auto
         draft.sent_message_id = outbound.id

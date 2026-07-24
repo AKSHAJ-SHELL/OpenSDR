@@ -173,7 +173,12 @@ def apply_classification(
 
                 mailbox = db.get(Mailbox, outbound.mailbox_id)
             if mailbox is not None:
-                record_bounce(db, mailbox)
+                # M5.3: the inbound body is the bounce diagnostic — spam/block/
+                # reputation wording classifies it as the complaint proxy
+                record_bounce(
+                    db, mailbox,
+                    diagnostic=(inbound_msg.body if inbound_msg is not None else None),
+                )
     # --- escalation (M4.2): notify/urgent/suppress/review as the ruleset decides.
     # The interested Slack ping now lives in the builtin:interested-notify rule.
     execute_escalation(
