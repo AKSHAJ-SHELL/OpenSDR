@@ -376,6 +376,46 @@ class MessageOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class EscalationMatch(BaseModel):
+    """AND-ed conditions; None = wildcard."""
+
+    classifications: list[str] | None = None
+    min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    keywords_any: list[str] | None = None
+
+
+class EscalationActions(BaseModel):
+    notify: bool = False
+    urgent_notify: bool = False
+    suppress: bool = False
+    review_queue: bool = False
+    block_draft: bool = False
+    block_autopilot: bool = False
+
+
+class EscalationRuleCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    priority: int = Field(default=100, ge=0)
+    enabled: bool = True
+    match: EscalationMatch = Field(default_factory=EscalationMatch)
+    actions: EscalationActions = Field(default_factory=EscalationActions)
+
+
+class EscalationRuleOut(BaseModel):
+    id: uuid.UUID
+    campaign_id: uuid.UUID | None
+    name: str
+    priority: int
+    enabled: bool
+    match: dict
+    actions: dict
+    builtin: bool = False
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class ReplyDraftOut(BaseModel):
     id: uuid.UUID
     inbound_message_id: uuid.UUID

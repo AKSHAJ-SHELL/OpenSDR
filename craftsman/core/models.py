@@ -323,6 +323,36 @@ class TouchTask(Base):
     enrollment: Mapped[Enrollment] = relationship()
 
 
+class EscalationRule(Base):
+    """When a human is pulled in, as data (M4.2, G9). NULL campaign_id = global.
+
+    `match` JSONB: {classifications: [..]|null, min_confidence, max_confidence,
+    keywords_any: [..]|null} — AND-ed, null = wildcard. `actions` JSONB: {notify,
+    urgent_notify, suppress, review_queue, block_draft, block_autopilot} booleans.
+    DB rules ADD to the built-in defaults (inbox/escalation.py) — the legal-threat
+    tripwire and the interested-notify baseline cannot be disabled from data.
+    """
+
+    __tablename__ = "escalation_rules"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("campaigns.id"), index=True
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=100, server_default=text("100")
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    match: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    actions: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
 class ReplyDraft(Base):
     """A validated, skeleton-rendered reply waiting for a human (M4.1 Copilot).
 

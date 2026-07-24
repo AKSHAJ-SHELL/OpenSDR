@@ -87,6 +87,16 @@ async def handle_inbound(
             "low-confidence (%.2f) classification '%s' routed to review queue",
             classification.confidence, classification.label,
         )
+        # M4.2: escalation still runs on unconfident replies — a legal threat must
+        # suppress and page a human even when the classifier hedged. (The keyword
+        # rules don't depend on the label; review routing above already happened,
+        # so a duplicate review action is skipped by the executor.)
+        decision = _evaluate_escalation(db, enrollment, classification, inbound_msg)
+        execute_escalation(
+            db, decision,
+            enrollment=enrollment, outbound=outbound, inbound_msg=inbound_msg,
+            label=classification.label, skip_review_item=True,
+        )
         return inbound_msg
 
     apply_classification(
@@ -111,9 +121,16 @@ def apply_classification(
     drafting for interested/objection replies — injected like tick's enqueue_* so the
     pure pipeline never imports Celery. Drafting is async and can never block or fail
     classification. A None callable means no drafting (tests, callers that opt out).
+
+    M4.2: the escalation ruleset is evaluated here (built-in defaults + DB rules) and
+    executed — the default interested-notify rule reproduces the pre-M4.2 Slack ping
+    exactly, and `block_draft` gates the M4.1 enqueue below.
     """
     label = classification.label
     lead = db.get(Lead, enrollment.lead_id) if enrollment else None
+
+    inbound_msg = db.get(Message, inbound_message_id) if inbound_message_id else None
+    escalation = _evaluate_escalation(db, enrollment, classification, inbound_msg)
 
     # --- state machine
     if enrollment is not None:
@@ -157,16 +174,93 @@ def apply_classification(
                 mailbox = db.get(Mailbox, outbound.mailbox_id)
             if mailbox is not None:
                 record_bounce(db, mailbox)
-        elif label == "interested":
-            notify_interested(lead, outbound)
+    # --- escalation (M4.2): notify/urgent/suppress/review as the ruleset decides.
+    # The interested Slack ping now lives in the builtin:interested-notify rule.
+    execute_escalation(
+        db, escalation,
+        enrollment=enrollment, outbound=outbound, inbound_msg=inbound_msg, label=label,
+    )
 
     # --- Copilot draft (M4.1): interested/objection replies get a validated draft
     # queued for a human. Suppression re-checked inside the generator; unsubscribe/
-    # bounce labels never reach here with a drafting label.
-    if enqueue_draft is not None and inbound_message_id is not None and label in (
-        "interested", "objection",
+    # bounce labels never reach here with a drafting label. An escalation match with
+    # block_draft (e.g. the legal-threat tripwire) means NO draft, ever.
+    if (
+        enqueue_draft is not None
+        and inbound_message_id is not None
+        and label in ("interested", "objection")
+        and not escalation.block_draft
     ):
         enqueue_draft(inbound_message_id)
+
+
+def _evaluate_escalation(db, enrollment, classification, inbound_msg):
+    """Effective ruleset (defaults + global + campaign DB rules) → decision."""
+    from craftsman.inbox.escalation import evaluate, load_rules
+
+    settings = get_settings()
+    rules = load_rules(
+        db,
+        enrollment.campaign_id if enrollment else None,
+        settings.classifier_confidence_threshold,
+    )
+    return evaluate(
+        rules,
+        label=classification.label,
+        confidence=classification.confidence,
+        reply_text=(inbound_msg.body if inbound_msg is not None else "") or "",
+    )
+
+
+def execute_escalation(
+    db, decision, *, enrollment, outbound, inbound_msg, label, skip_review_item=False,
+) -> None:
+    """Apply a decision's I/O actions. block_draft/block_autopilot are consumed by
+    the callers (draft enqueue above; Autopilot policy in M4.4) — not here."""
+    if not decision.any_action:
+        return
+    lead = db.get(Lead, enrollment.lead_id) if enrollment else None
+    log.info(
+        "escalation matched %s for %s", decision.matched_rules,
+        lead.email if lead else "unknown lead",
+    )
+    if decision.suppress and lead is not None:
+        suppress(db, lead.email, reason="escalation")
+    if decision.review_queue and not skip_review_item:
+        db.add(
+            ReviewQueueItem(
+                kind="escalation",
+                message_id=inbound_msg.id if inbound_msg is not None else None,
+                enrollment_id=enrollment.id if enrollment else None,
+                payload={
+                    "rules": decision.matched_rules,
+                    "label": label,
+                    "suppressed": decision.suppress,
+                },
+            )
+        )
+    if decision.urgent_notify:
+        snippet = ((inbound_msg.body if inbound_msg is not None else "") or "")[:300]
+        _slack(
+            f":rotating_light: *Escalation* ({', '.join(decision.matched_rules)})\n"
+            f"From: {lead.email if lead else 'unknown'}\n"
+            f"Label: {label}"
+            f"{' · suppressed' if decision.suppress else ''}\n"
+            f"> {snippet}"
+        )
+    elif decision.notify and lead is not None and outbound is not None:
+        notify_interested(lead, outbound)
+
+
+def _slack(text: str) -> None:
+    url = get_settings().slack_webhook_url
+    if not url:
+        log.info("slack notify skipped (no webhook configured): %s", text.splitlines()[0])
+        return
+    try:
+        httpx.post(url, json={"text": text}, timeout=10)
+    except httpx.HTTPError as e:
+        log.warning("Slack notify failed: %s", e)
 
 
 def notify_interested(lead: Lead, outbound: Message) -> None:

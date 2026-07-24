@@ -483,6 +483,7 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Reply commitment gate | terms in `copywriter/commitment_terms.txt` + any currency amount must be licensed by campaign config / trusted sources — the prospect's reply can never license a price or promise | `validator.py validate_reply_fill` |
 | Reply draft idempotency | one draft per inbound message; unique `uq_reply_draft_inbound`, claim-before-LLM | `workers/tasks.py generate_reply_draft` |
 | Reply bandit isolation | drafts/sent replies never update copy posteriors (`bandit_outcome` NULL); acceptance rate is the metric | `sender/reply.py`; `/analytics/overview` |
+| Escalation rules | defaults always active (legal/GDPR tripwire: suppress + urgent notify + never a draft; confident interested → Slack ping); DB rules ADD via union — no rule can shadow the tripwire | `inbox/escalation.py`; `/campaigns/{id}/escalation-rules` (M4.2) |
 
 ---
 
