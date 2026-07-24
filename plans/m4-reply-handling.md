@@ -1,6 +1,13 @@
 # Plan — M4: Reply handling & meeting booking (G7–G9) ⛔ Gate M4
 
-**Branch:** `m4-reply-handling` (off `main` = M0+M1+M2+M3) · **Status:** approved, executing · **Roadmap:** M4 (`ROADMAP.md:243`)
+**Branch:** `m4-reply-handling` (off `main` = M0+M1+M2+M3) · **Status:** executed — PR open, merge awaits human review of `findings/10` (Q2 gate) · **Roadmap:** M4 (`ROADMAP.md:243`)
+
+> **Deviations from this plan, all recorded in `findings/11-m4-reply-handling.md`:**
+> escalation decisions are the UNION of matching rules (not first-match — no rule can
+> shadow the legal tripwire); currency licensing = campaign + brief (trusted sources),
+> reply-only grounding still rejects; `reply_followup_weeks` (drives Copilot too);
+> terminal-state test narrowed to enumerate the meeting_booked carve-out; campaign
+> daily cap deliberately not applied to reply dispatch.
 
 > **⛔ Gate M4 sign-off (recorded before implementation):**
 > **Q1 — Reply-handling design → Option B approved** (Copilot for everything + opt-in
