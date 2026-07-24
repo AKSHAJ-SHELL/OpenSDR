@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 # ---------------------------------------------------------------- LLM schemas
 
@@ -799,3 +799,68 @@ class OrgOut(BaseModel):
     mailbox_count: int = 0
     enrichment_daily_budget: int | None = None
     enrichment_calls_today: int = 0
+
+
+# ---------------------------------------------------------------- webhooks out (M5.4)
+
+
+def _known_event_types(mask: list[str]) -> list[str]:
+    """Shared mask validator: only registry event types, de-duped, order kept.
+    The registry (webhooks/events.py) is the single source of truth — a forged
+    event type is a 422 at the API edge, exactly like at emit time."""
+    from craftsman.webhooks.events import EVENT_TYPES
+
+    unknown = [e for e in mask if e not in EVENT_TYPES]
+    if unknown:
+        raise ValueError(f"unknown event type(s): {unknown} — valid: {list(EVENT_TYPES)}")
+    return list(dict.fromkeys(mask))
+
+
+class WebhookEndpointCreate(BaseModel):
+    url: str = Field(min_length=1)
+    event_mask: list[str] = Field(min_length=1)
+
+    @field_validator("event_mask")
+    @classmethod
+    def _mask_known(cls, v: list[str]) -> list[str]:
+        return _known_event_types(v)
+
+
+class WebhookEndpointUpdate(BaseModel):
+    url: str | None = None
+    event_mask: list[str] | None = Field(default=None, min_length=1)
+    active: bool | None = None
+
+    @field_validator("event_mask")
+    @classmethod
+    def _mask_known(cls, v: list[str] | None) -> list[str] | None:
+        return None if v is None else _known_event_types(v)
+
+
+class WebhookEndpointOut(BaseModel):
+    id: uuid.UUID
+    url: str
+    event_mask: list[str]
+    active: bool
+    secret_prefix: str  # never the secret — shown once at creation only
+    created_at: datetime | None = None
+
+
+class WebhookEndpointCreated(WebhookEndpointOut):
+    """Returned exactly once, on creation: includes the plaintext secret."""
+
+    secret: str
+
+
+class WebhookDeliveryOut(BaseModel):
+    id: uuid.UUID
+    endpoint_id: uuid.UUID
+    event_type: str
+    payload: dict
+    status: Literal["pending", "delivered", "failed"]
+    attempts: int
+    last_error: str | None = None
+    created_at: datetime | None = None
+    delivered_at: datetime | None = None
+
+    model_config = {"from_attributes": True}

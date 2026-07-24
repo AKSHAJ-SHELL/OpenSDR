@@ -21,6 +21,7 @@ from craftsman.api.routers import (
     tasks,
     unsubscribe,
     users,
+    webhooks,
 )
 
 
@@ -72,6 +73,7 @@ app.include_router(unsubscribe.router)
 app.include_router(users.router)
 app.include_router(sso.router)
 app.include_router(org.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(require_scope("read"))])

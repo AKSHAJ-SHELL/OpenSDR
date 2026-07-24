@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     domain_pause_bounce_threshold: int = 5
     domain_min_interval_s: float = 0.0
 
+    # Platform operations (M5.4). `webhook_max_attempts` bounds outbound webhook
+    # delivery tries (exponential backoff 30s→1h between them); exhaustion marks
+    # the delivery failed and dead-letters it. `audit_retention_days` > 0 makes
+    # the daily reset sweep delete each org's audit_log rows older than the
+    # cutoff; 0 (default) keeps the audit log forever.
+    webhook_max_attempts: int = 8
+    audit_retention_days: int = 0
+
     # OIDC SSO (M5.1b, generic — Google/Okta/Entra docs in README). Empty
     # discovery URL = SSO off; password login always works as break-glass.
     oidc_discovery_url: str = ""

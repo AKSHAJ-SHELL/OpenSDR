@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "craftsman.fullname" . }}-worker
+  labels:
+    {{- include "craftsman.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  # Workers are stateless: coordination is Postgres row locks + Redis token
+  # buckets, so scaling replicas up is safe (docs/operations.md).
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "craftsman.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - celery
+            - -A
+            - craftsman.workers.celery_app
+            - worker
+            - -Q
+            - {{ .Values.worker.queues | quote }}
+            - -l
+            - info
+            - --concurrency={{ .Values.worker.concurrency }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          {{- with .Values.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}

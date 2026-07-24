@@ -62,6 +62,7 @@ app.conf.update(
         "craftsman.workers.tasks.poll_inboxes": {"queue": "inbox"},
         "craftsman.workers.tasks.settle_bandit": {"queue": "settle"},
         "craftsman.workers.tasks.redrive_unsent": {"queue": "settle"},
+        "craftsman.workers.tasks.deliver_webhook": {"queue": "settle"},
         "craftsman.workers.tasks.sequencer_tick": {"queue": "send"},
         "craftsman.workers.tasks.collect_signals": {"queue": "research"},
     },

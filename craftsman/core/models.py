@@ -790,6 +790,59 @@ class PlacementResult(OrgScoped, Base):
     run: Mapped[PlacementRun] = relationship(back_populates="results")
 
 
+class WebhookEndpoint(OrgScoped, Base):
+    """An outbound webhook subscription (M5.4). `url` is https-only and passes
+    the M0.5 SSRF guard at registration AND again at every delivery (DNS can
+    change). `secret_enc` is Fernet-encrypted like mailbox passwords; the
+    plaintext is shown once at creation and never echoed again (only a prefix).
+    `event_mask` is the JSONB list of subscribed event types — the registry
+    lives in craftsman/webhooks/events.py."""
+
+    __tablename__ = "webhook_endpoints"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    event_mask: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class WebhookDelivery(OrgScoped, Base):
+    """One event → one endpoint delivery attempt record (M5.4). Status walks
+    pending → delivered, or pending → failed after `webhook_max_attempts`
+    tries with exponential backoff (terminal failure also dead-letters via the
+    task_failure signal). `payload` is what was POSTed (inside the signed
+    envelope — see webhooks/delivery.py)."""
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        Index("ix_webhook_deliveries_endpoint_created", "endpoint_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    endpoint_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("webhook_endpoints.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )  # pending|delivered|failed
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ApiKey(OrgScoped, Base):
     """A hashed, scoped API key. The plaintext token is shown once at creation;
     only its SHA-256 digest is stored here."""

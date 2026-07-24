@@ -19,6 +19,7 @@ from craftsman.llm.client import LLMClient
 from craftsman.sender.smtp import record_bounce
 from craftsman.sequencer.machine import Event, InvalidTransition
 from craftsman.sequencer.tick import apply_event
+from craftsman.webhooks.events import safe_emit
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,17 @@ async def handle_inbound(
     )
     db.add(inbound_msg)
     db.flush()
+
+    # M5.4: reply.received fires for every matched+classified reply — including
+    # low-confidence ones headed for the review queue. safe_emit: a webhook
+    # problem can never break classification.
+    safe_emit(db, "reply.received", {
+        "message_id": str(inbound_msg.id),
+        "enrollment_id": str(outbound.enrollment_id) if outbound.enrollment_id else None,
+        "classification": classification.label,
+        "confidence": classification.confidence,
+        "subject": inbound.subject,
+    })
 
     settings = get_settings()
     if classification.confidence < settings.classifier_confidence_threshold:
@@ -135,11 +147,22 @@ def apply_classification(
     # --- state machine
     if enrollment is not None:
         was_awaiting_touch = enrollment.state == "awaiting_human_touch"
+        from_state = enrollment.state
         event = LABEL_TO_EVENT[label]
         try:
             apply_event(db, enrollment, event, detail={"label": label})
         except InvalidTransition as e:
             log.warning("classification transition skipped: %s", e)
+        # M5.4: lead.status_changed — emitted from HERE and the manual suppress
+        # endpoint only (granularity documented in webhooks/events.py)
+        if enrollment.state != from_state:
+            safe_emit(db, "lead.status_changed", {
+                "lead_id": str(enrollment.lead_id),
+                "enrollment_id": str(enrollment.id),
+                "from_state": from_state,
+                "to_state": enrollment.state,
+                "label": label,
+            })
         # M3.1: a reply/bounce/unsub that moved the enrollment out of
         # awaiting_human_touch orphans its open task — cancel it so nobody performs
         # a touch on a lead who already answered (or must not be contacted).
@@ -229,6 +252,15 @@ def execute_escalation(
         "escalation matched %s for %s", decision.matched_rules,
         lead.email if lead else "unknown lead",
     )
+    # M5.4: escalation.fired — the decision as data, before its I/O actions run
+    safe_emit(db, "escalation.fired", {
+        "rules": decision.matched_rules,
+        "label": label,
+        "enrollment_id": str(enrollment.id) if enrollment else None,
+        "suppress": decision.suppress,
+        "urgent_notify": decision.urgent_notify,
+        "review_queue": decision.review_queue,
+    })
     if decision.suppress and lead is not None:
         suppress(db, lead.email, reason="escalation")
     if decision.review_queue and not skip_review_item:

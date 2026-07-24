@@ -104,6 +104,20 @@ def _apply_event_row(db: Session, event: MeetingEvent) -> Meeting:
                 except InvalidTransition as e:
                     log.warning("meeting booked but transition skipped: %s", e)
     db.flush()  # state + meeting row durable in-transaction before the response
+
+    # M5.4: meeting.updated. This function runs UNSCOPED (the webhook is
+    # instance-wide), so enter the meeting's own org before emitting — the
+    # endpoint lookup and delivery rows must belong to the meeting's tenant.
+    from craftsman.webhooks.events import safe_emit
+
+    with org_context(meeting.org_id):
+        safe_emit(db, "meeting.updated", {
+            "meeting_id": str(meeting.id),
+            "provider": meeting.provider,
+            "status": meeting.status,
+            "enrollment_id": str(meeting.enrollment_id) if meeting.enrollment_id else None,
+            "start_at": meeting.start_at.isoformat() if meeting.start_at else None,
+        })
     return meeting
 
 

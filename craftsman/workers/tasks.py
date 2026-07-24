@@ -604,6 +604,15 @@ def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
                 "confidence": inbound.classification_confidence,
             },
         ))
+        # M5.4: announce the send to subscribed endpoints (never blocks the path)
+        from craftsman.webhooks.events import safe_emit
+
+        safe_emit(db, "autopilot.sent", {
+            "draft_id": str(draft.id),
+            "enrollment_id": str(enrollment.id),
+            "skeleton": draft.skeleton_key,
+            "confidence": inbound.classification_confidence,
+        })
         log.info("autopilot dispatched draft %s (%s)", draft.id, draft.skeleton_key)
     except SendBlocked as e:
         # rate limit / capacity → draft is back in pending for a human; suppression
@@ -768,6 +777,72 @@ def run_placement(run_id: str):
         if run is None or run.status != "running":
             return
         _run(execute_placement_run(db, run))
+
+
+# ------------------------------------------------------------------ webhooks out (M5.4)
+
+
+class WebhookDeliveryFailed(RuntimeError):
+    """Terminal delivery failure (attempts exhausted) — raised so the
+    task_failure signal records a dead letter for re-drive/inspection."""
+
+
+@app.task(bind=True, max_retries=None)
+def deliver_webhook(self, delivery_id: str):
+    """POST one webhook delivery to its endpoint, signed with the endpoint's
+    secret (same HMAC-SHA256-over-raw-body scheme we verify inbound from
+    Cal.com — see webhooks/delivery.py). The endpoint URL is re-validated
+    through the M0.5 SSRF guard at delivery time as well as registration,
+    because DNS can change in between. Failures retry with exponential backoff
+    (30s→1h) up to the `webhook_max_attempts` knob; exhaustion marks the row
+    failed and raises so the task_failure signal dead-letters it. The durable
+    `attempts` counter on the row — not Celery's retry count — is the
+    authority, so redeliveries can't extend the budget."""
+    from craftsman.core.config import get_settings
+    from craftsman.core.crypto import decrypt
+    from craftsman.core.models import WebhookDelivery, WebhookEndpoint
+    from craftsman.webhooks import delivery as wd
+
+    max_attempts = get_settings().webhook_max_attempts
+    with _org_task_scope(WebhookDelivery, delivery_id) as (db, row):
+        if row is None or row.status != "pending":
+            return
+        endpoint = db.get(WebhookEndpoint, row.endpoint_id)
+        if endpoint is None or not endpoint.active:
+            row.status = "failed"
+            row.last_error = "endpoint deleted or deactivated"
+            db.add(row)
+            return
+        row.attempts += 1
+        db.add(row)
+        try:
+            wd.validate_url(endpoint.url)  # SSRF re-check: DNS may have changed
+            body = wd.build_body(row)
+            headers = {
+                "Content-Type": "application/json",
+                wd.EVENT_HEADER: row.event_type,
+                wd.DELIVERY_HEADER: str(row.id),
+                wd.SIGNATURE_HEADER: wd.sign_body(decrypt(endpoint.secret_enc), body),
+            }
+            wd.post_delivery(endpoint.url, body, headers)
+        except Exception as e:  # noqa: BLE001 — every failure mode retries the same way
+            row.last_error = f"{type(e).__name__}: {e}"[:2000]
+            db.add(row)
+            if row.attempts >= max_attempts:
+                row.status = "failed"
+                db.commit()  # terminal state durable before the failure signal fires
+                log.warning(
+                    "webhook delivery %s failed terminally after %d attempts: %s",
+                    delivery_id, row.attempts, row.last_error,
+                )
+                raise WebhookDeliveryFailed(
+                    f"delivery {delivery_id} exhausted {max_attempts} attempts: {row.last_error}"
+                ) from e
+            db.commit()  # attempt count durable before we wait out the backoff
+            raise self.retry(countdown=wd.backoff_seconds(row.attempts))
+        row.status = "delivered"
+        row.delivered_at = datetime.now(timezone.utc)
+        db.add(row)
 
 
 # ------------------------------------------------------------------ enrich
@@ -958,10 +1033,12 @@ def redrive_unsent():
 
 @app.task
 def reset_daily_counters():
-    from sqlalchemy import update
+    from sqlalchemy import delete, update
 
-    from craftsman.core.models import Campaign
+    from craftsman.core.config import get_settings
+    from craftsman.core.models import AuditLog, Campaign
 
+    retention_days = get_settings().audit_retention_days
     with session_scope() as db:
         for oid in _org_ids(db):
             with org_context(oid):
@@ -975,6 +1052,12 @@ def reset_daily_counters():
                     db.add(mailbox)
                 # zero the per-campaign send counters used by the atomic cap reserve
                 db.execute(update(Campaign).values(sent_today=0))
+                # audit retention (M5.4): 0 = keep forever. AuditLog is OrgScoped,
+                # so the delete runs INSIDE the per-org loop — the tenancy layer
+                # appends the org predicate and each org only ever prunes itself.
+                if retention_days > 0:
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+                    db.execute(delete(AuditLog).where(AuditLog.created_at < cutoff))
         # zero the per-org quota counters (M5.1c) — Org is not org-scoped, so this
         # single UPDATE covers every tenant
         from craftsman.core.models import Org

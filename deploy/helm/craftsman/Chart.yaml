@@ -1,0 +1,9 @@
+apiVersion: v2
+name: craftsman
+description: >-
+  Craftsman — open-source AI SDR. Deploys the API, Celery workers, the beat
+  scheduler, and the Next.js dashboard. Postgres (with pgvector) and Redis are
+  deliberately EXTERNAL — see values.yaml for why.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
