@@ -514,7 +514,7 @@ def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
     from craftsman.core.models import AuditLog
     from craftsman.inbox.autopilot import AutopilotContext, decide, prior_auto_replies
     from craftsman.inbox.escalation import evaluate, load_rules
-    from craftsman.sender.reply import send_reply_draft
+    from craftsman.sender.reply import DraftUnavailable, send_reply_draft
     from craftsman.sender.smtp import SendBlocked
 
     settings = get_settings()
@@ -569,6 +569,16 @@ def _maybe_autopilot_send(db, draft, inbound, enrollment, campaign, lead):
             enrollment_id=enrollment.id,
             event="autopilot_declined",
             detail={"draft_id": str(draft.id), "reason": f"send_blocked:{e.reason}"},
+        ))
+    except DraftUnavailable as e:
+        # lost the structural thread-guard race (F-05): another auto-reply claimed
+        # this thread between our policy read and the dispatch CAS — the draft
+        # stays pending for a human, which is exactly the invariant's promise
+        log.warning("autopilot claim refused for draft %s: %s", draft.id, e)
+        db.add(AuditLog(
+            enrollment_id=enrollment.id,
+            event="autopilot_declined",
+            detail={"draft_id": str(draft.id), "reason": "thread_guard"},
         ))
     except Exception as e:  # never fail the generation task over an auto-send
         log.warning("autopilot send failed for draft %s: %s", draft.id, e)

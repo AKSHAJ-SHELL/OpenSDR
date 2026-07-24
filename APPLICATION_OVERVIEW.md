@@ -488,7 +488,7 @@ change these thresholds to make a test pass** — they encode product behavior.
 | Campaign booking links | `campaigns.scheduling_url` (interested drafts) / `info_doc_url` ("send me info" drafts) — static lines, never LLM output; empty = line omitted | migration `0013`; campaign builder (M4.3) |
 | `autopilot_min_confidence` ⛔ | 0.9 — below this Guarded Autopilot never fires | config (⛔ Gate M4 Option B) |
 | Autopilot enable/disable | per-campaign `autopilot_enabled` (default false, migration `0014`); enable = **admin** scope (deliberate friction), disable = operate (instant kill switch); both audit-logged | `/campaigns/{id}/autopilot/*` (M4.4) |
-| Autopilot invariants (not knobs) | ≤ 1 auto-reply per thread ever (reply-to-auto-reply always escalates); only the 3 deterministic skeletons; validator gates apply unchanged; escalation `block_autopilot` vetoes; lead-local business hours | `inbox/autopilot.py` — `MAX_AUTO_REPLIES_PER_THREAD` is a constant |
+| Autopilot invariants (not knobs) | ≤ 1 auto-reply per thread ever (reply-to-auto-reply always escalates); only the 3 deterministic skeletons; validator gates apply unchanged; escalation `block_autopilot` vetoes; lead-local business hours | `inbox/autopilot.py` — `MAX_AUTO_REPLIES_PER_THREAD` is a constant; **structural since M5**: the auto dispatch claim stamps `auto_sent` before I/O under partial unique index `uq_auto_reply_per_thread` (migration `0015`, F-05 in findings/12), so racing workers cannot double-send |
 
 ---
 

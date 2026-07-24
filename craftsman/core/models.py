@@ -414,6 +414,18 @@ class ReplyDraft(Base):
     __tablename__ = "reply_drafts"
     __table_args__ = (
         UniqueConstraint("inbound_message_id", name="uq_reply_draft_inbound"),
+        # F-05 (findings/12): the ≤1-auto-reply-per-thread invariant, structural.
+        # The auto dispatch path stamps auto_sent at its CAS claim — before any
+        # I/O — so a second qualifying draft in the same thread trips this index
+        # instead of reaching SMTP, closing the read-then-act race between
+        # parallel workers. Released (pending/discarded) drafts clear auto_sent
+        # and free the reservation.
+        Index(
+            "uq_auto_reply_per_thread",
+            "enrollment_id",
+            unique=True,
+            postgresql_where=text("auto_sent AND enrollment_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()

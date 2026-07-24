@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from craftsman.compliance.suppression import is_suppressed
@@ -46,15 +47,28 @@ class DraftInvalid(Exception):
         self.errors = errors
 
 
-def _claim(db: Session, draft: ReplyDraft) -> None:
+def _claim(db: Session, draft: ReplyDraft, *, auto: bool = False) -> None:
     """CAS pending→sending — the idempotency claim, committed before any I/O so a
     concurrent second click (or a duplicate Autopilot evaluation) trips on rowcount
-    0 and never produces a duplicate email."""
-    result = db.execute(
-        update(ReplyDraft)
-        .where(ReplyDraft.id == draft.id, ReplyDraft.status == "pending")
-        .values(status="sending")
-    )
+    0 and never produces a duplicate email.
+
+    The auto path also stamps ``auto_sent`` HERE, not after delivery: the partial
+    unique index ``uq_auto_reply_per_thread`` then makes the ≤1-auto-reply-per-
+    thread invariant structural — a second qualifying draft in the same thread
+    (two workers that both read a zero prior-auto-reply count) fails this claim
+    with IntegrityError before any mail could leave (F-05, findings/12)."""
+    values: dict = {"status": "sending"}
+    if auto:
+        values["auto_sent"] = True
+    try:
+        result = db.execute(
+            update(ReplyDraft)
+            .where(ReplyDraft.id == draft.id, ReplyDraft.status == "pending")
+            .values(**values)
+        )
+    except IntegrityError:
+        db.rollback()
+        raise DraftUnavailable("auto_reply_already_sent_in_thread")
     if result.rowcount != 1:
         raise DraftUnavailable(f"draft is not pending (status={draft.status!r})")
     db.commit()
@@ -63,6 +77,9 @@ def _claim(db: Session, draft: ReplyDraft) -> None:
 
 def _release(db: Session, draft: ReplyDraft, status: str, detail: dict | None = None) -> None:
     draft.status = status
+    # only "sent"/"edited_sent" ever bypass _release — an undispatched draft holds
+    # no thread reservation, so a failed/blocked auto attempt frees the index slot
+    draft.auto_sent = False
     if detail is not None:
         draft.detail = {**(draft.detail or {}), **detail}
     db.add(draft)
@@ -122,7 +139,8 @@ async def send_reply_draft(
         body = edited_body
         edited = True
 
-    _claim(db, draft)  # durable pending→sending before any check with side effects
+    _claim(db, draft, auto=auto)  # durable pending→sending (+ thread reservation
+    # for auto) before any check with side effects
 
     try:
         if lead is None or is_suppressed(db, lead.email):
