@@ -427,8 +427,10 @@ change these thresholds to make a test pass** — they encode product behavior.
 
 | Knob | Default | Where |
 |---|---|---|
-| `LLM_PROVIDER` | anthropic (mock in tests) | config |
+| `LLM_PROVIDER` | anthropic (mock in tests) — `anthropic \| openai \| ollama \| mock` | config |
 | `anthropic_model` | `claude-sonnet-4-6` | config |
+| `openai_model` / `openai_base_url` | `gpt-5-mini` / `https://api.openai.com/v1` (any OpenAI-compatible endpoint) | config |
+| `ollama_model` / `ollama_base_url` | `qwen2.5:14b` / `http://localhost:11434` | config |
 | `icp_threshold` | 0.55 | config |
 | ICP weights — no signals | `icp_cosine_weight` 0.7 / `icp_rule_weight` 0.3 | config |
 | ICP weights — with signals ⛔ | `icp_signal_cosine_weight` 0.6 / `icp_signal_rule_weight` 0.25 / `icp_signal_weight` 0.15 | config (M2.3; default set at ⛔ Gate M2 — 'renormalized': no-signal leads keep 0.7/0.3) |

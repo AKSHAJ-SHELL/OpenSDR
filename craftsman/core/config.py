@@ -6,10 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # LLM
+    # LLM — pick one provider; ollama is the $0 no-key path, openai works with
+    # any OpenAI-compatible endpoint via `openai_base_url`.
+    llm_provider: str = "anthropic"  # anthropic | openai | ollama | mock
     anthropic_api_key: str = ""
-    llm_provider: str = "anthropic"  # anthropic | ollama | mock
     anthropic_model: str = "claude-sonnet-4-6"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:14b"
 

@@ -21,7 +21,7 @@ webImage:
 #   DATABASE_URL              postgresql+psycopg://user:pass@host:5432/craftsman
 #   REDIS_URL                 redis://host:6379/0
 #   CRAFTSMAN_SECRET_KEY      Fernet key (mailbox credentials + webhook secrets at rest)
-#   ANTHROPIC_API_KEY         (or LLM_PROVIDER=ollama + OLLAMA_BASE_URL)
+#   ANTHROPIC_API_KEY         (or OPENAI_API_KEY, or LLM_PROVIDER=ollama + OLLAMA_BASE_URL)
 #   CRAFTSMAN_API_KEY         dashboard's server-side API key
 #   DASHBOARD_PASSWORD_HASH   scrypt hash (see README auth setup)
 #   DASHBOARD_SESSION_SECRET  cookie-signing secret

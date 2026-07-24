@@ -24,9 +24,19 @@ def get_llm() -> LLMClient:
 
     provider = get_settings().llm_provider
     if provider == "anthropic":
+        if not get_settings().anthropic_api_key:
+            # fail at construction with a pointer, not with a 401 mid-pipeline
+            raise ValueError(
+                "LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is empty — set a key, "
+                "or use LLM_PROVIDER=ollama (local, $0) or LLM_PROVIDER=openai"
+            )
         from craftsman.llm.anthropic_impl import AnthropicClient
 
         return AnthropicClient()
+    if provider == "openai":
+        from craftsman.llm.openai_impl import OpenAIClient
+
+        return OpenAIClient()
     if provider == "ollama":
         from craftsman.llm.ollama_impl import OllamaClient
 

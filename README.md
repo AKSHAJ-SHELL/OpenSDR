@@ -10,7 +10,7 @@ Craftsman runs end-to-end outbound: leads in → researched, personalized sequen
 docker compose up
 ```
 
-That's the whole deployment. Bring your own Anthropic API key (or run the Ollama fallback for $0 marginal cost).
+That's the whole deployment. Bring your own LLM: Anthropic or OpenAI keys, or run Ollama locally for $0 marginal cost — `LLM_PROVIDER=anthropic | openai | ollama`.
 
 ## Why this exists
 
@@ -71,7 +71,7 @@ Key modules:
 | `craftsman/bandit/thompson.py` | The learning loop |
 | `craftsman/inbox/pipeline.py` | Reply → classify → state → bandit → handoff |
 | `craftsman/sender/smtp.py` | Suppression/cap/warmup/rate-limit checks + compliant headers |
-| `craftsman/llm/` | Provider-agnostic structured-output client (Claude default, Ollama fallback, mock for tests) |
+| `craftsman/llm/` | Provider-agnostic structured-output client (Claude, OpenAI/compatible, Ollama, mock for tests) |
 | `web/` | Next.js dashboard (Gojiberry-style agent UI) |
 
 ## Deliverability (read this before you send)
@@ -101,7 +101,9 @@ way to burn a domain, which is why verification gates enrollment and warmup gate
 
 ```bash
 cp .env.example .env
-# set ANTHROPIC_API_KEY (or LLM_PROVIDER=ollama) and generate CRAFTSMAN_SECRET_KEY:
+# pick an LLM: LLM_PROVIDER=ollama (local, no key), or anthropic/openai with the
+# matching API key set. OPENAI_BASE_URL accepts any OpenAI-compatible endpoint.
+# Then generate CRAFTSMAN_SECRET_KEY:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
 # --- auth setup (required) ---

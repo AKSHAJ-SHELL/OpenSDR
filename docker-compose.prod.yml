@@ -19,8 +19,8 @@
 # └─────────────────────────────────────────────────────────────────────────┘
 #
 # Required in .env (compose fails fast on the ones marked :?):
-#   POSTGRES_PASSWORD, CRAFTSMAN_SECRET_KEY, ANTHROPIC_API_KEY (or
-#   LLM_PROVIDER=ollama), CRAFTSMAN_API_KEY, DASHBOARD_PASSWORD_HASH,
+#   POSTGRES_PASSWORD, CRAFTSMAN_SECRET_KEY, an LLM (ANTHROPIC_API_KEY or
+#   OPENAI_API_KEY or LLM_PROVIDER=ollama), CRAFTSMAN_API_KEY, DASHBOARD_PASSWORD_HASH,
 #   DASHBOARD_SESSION_SECRET — see README "Authentication".
 #
 # Run:  docker compose -f docker-compose.prod.yml up -d
