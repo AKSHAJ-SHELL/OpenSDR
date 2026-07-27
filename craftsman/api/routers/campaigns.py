@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
@@ -350,8 +349,6 @@ def update_variant(
 )
 async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     """Activate: score all verified leads against the ICP and enroll those above threshold."""
-    from craftsman.scoring.embeddings import get_embedder
-    from craftsman.scoring.icp import lead_text, score_breakdown
 
     campaign = db.get(Campaign, campaign_id)
     if campaign is None:
@@ -371,55 +368,12 @@ async def activate(campaign_id: uuid.UUID, db: Session = Depends(get_db)):
     if skeleton_steps and not has_variants:
         raise HTTPException(400, "campaign has no variants; add at least one per step")
 
-    settings = get_settings()
-    embedder = get_embedder()
-    icp_emb = list(campaign.icp_embedding) if campaign.icp_embedding is not None else (
-        await embedder.embed([campaign.icp_description])
-    )[0]
-
-    from craftsman.scoring.rules import company_signal_boost
+    from craftsman.scoring.enroll import score_and_enroll
 
     leads = db.scalars(
         select(Lead).where(Lead.email_verified.is_(True), Lead.status == "verified")
     ).all()
-    enrolled = 0
-    scored_at = datetime.now(timezone.utc)
-    for lead in leads:
-        company = lead.company
-        text = lead_text(lead.title, company.name if company else None, None)
-        lead_emb = (await embedder.embed([text]))[0]
-        # None ⇒ company has no signals ⇒ 2-way blend (unchanged); value ⇒ 3-way (M2.3)
-        boost = company_signal_boost(db, lead.company_id, scored_at, settings.signal_half_life_days)
-        breakdown = score_breakdown(lead_emb, icp_emb, lead.title, boost)
-        score = breakdown.score
-        lead.icp_score = score
-        # provenance: which ICP produced this, and from what parts
-        lead.icp_cosine = breakdown.cosine
-        lead.icp_rule = breakdown.rule
-        lead.icp_signal = breakdown.signal  # None when no signals
-        lead.icp_scored_campaign_id = campaign.id
-        lead.icp_scored_at = scored_at
-        if score < settings.icp_threshold:
-            lead.status = "disqualified"
-            db.add(lead)
-            continue
-        db.add(lead)
-        exists = db.scalar(
-            select(Enrollment.id).where(
-                Enrollment.lead_id == lead.id, Enrollment.campaign_id == campaign.id
-            )
-        )
-        if exists is None:
-            db.add(
-                Enrollment(
-                    lead_id=lead.id,
-                    campaign_id=campaign.id,
-                    state="queued",
-                    current_step=0,
-                    next_action_at=datetime.now(timezone.utc),
-                )
-            )
-            enrolled += 1
+    await score_and_enroll(db, campaign, leads)
 
     campaign.status = "active"
     db.add(campaign)

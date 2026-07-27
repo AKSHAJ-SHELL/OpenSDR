@@ -864,3 +864,75 @@ class WebhookDeliveryOut(BaseModel):
     delivered_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- CRM sync (M5.2)
+
+
+class CRMConnectionCreate(BaseModel):
+    provider: Literal["hubspot", "salesforce"]
+    name: str = Field(min_length=1)
+    # provider-specific shape, validated by the adapter/registry — hubspot:
+    # {access_token}; salesforce: {instance_url, client_id, client_secret}
+    credentials: dict
+    field_map: dict = Field(default_factory=dict)
+
+
+class CRMConnectionUpdate(BaseModel):
+    name: str | None = None
+    credentials: dict | None = None  # full replacement when present
+    field_map: dict | None = None
+    active: bool | None = None
+
+
+class CRMConnectionOut(BaseModel):
+    """Credentials are write-only: no field of this model ever carries them."""
+
+    id: uuid.UUID
+    provider: str
+    name: str
+    field_map: dict
+    active: bool
+    outbound_watermark: datetime | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class CRMListOut(BaseModel):
+    remote_id: str
+    name: str
+    size: int | None = None
+
+
+class CRMImportRequest(BaseModel):
+    list_id: str = Field(min_length=1)
+    campaign_id: uuid.UUID | None = None
+    # dry-run by default: committing customer data is the explicit path
+    dry_run: bool = True
+
+
+class CRMPreviewRowOut(BaseModel):
+    email: str
+    action: Literal["create", "update", "unchanged", "suppressed", "no_email"]
+    changes: dict = Field(default_factory=dict)
+
+
+class CRMImportOut(BaseModel):
+    dry_run: bool
+    stats: dict
+    preview: list[CRMPreviewRowOut] = Field(default_factory=list)
+    run_id: uuid.UUID | None = None  # committed imports leave a sync-run record
+
+
+class CRMSyncRunOut(BaseModel):
+    id: uuid.UUID
+    connection_id: uuid.UUID
+    direction: Literal["inbound", "outbound"]
+    status: Literal["running", "succeeded", "failed"]
+    stats: dict
+    error: str | None = None
+    created_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    model_config = {"from_attributes": True}

@@ -15,7 +15,7 @@ caller input — remote ids are validated as Salesforce ID literals first.
 """
 
 import re
-from datetime import datetime, timezone
+from datetime import timezone
 
 import httpx
 
