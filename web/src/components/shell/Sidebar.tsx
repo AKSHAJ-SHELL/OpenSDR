@@ -15,6 +15,7 @@ const NAV = [
   { href: "/deliverability", label: "Deliverability" },
   { href: "/analytics", label: "Analytics" },
   { href: "/settings/users", label: "Users" },
+  { href: "/settings/crm", label: "CRM sync" },
 ];
 
 export function Sidebar() {

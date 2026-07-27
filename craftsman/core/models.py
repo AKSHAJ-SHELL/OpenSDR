@@ -859,3 +859,85 @@ class ApiKey(OrgScoped, Base):
     )
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CRMConnection(OrgScoped, Base):
+    """A configured CRM (M5.2, G10). `credentials_enc` is a Fernet-encrypted
+    JSON blob (shape is provider-specific — see crm/provider.py); write-only at
+    the API like webhook secrets. `field_map` is the per-connection JSONB
+    overlay on the provider's default contact-field mapping (crm/mapping.py).
+    `outbound_watermark` is the cursor for crm_sync_tick's activity push —
+    everything Craftsman-side newer than it gets synced, then it advances."""
+
+    __tablename__ = "crm_connections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    provider: Mapped[str] = mapped_column(Text, nullable=False)  # hubspot|salesforce
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    credentials_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    field_map: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    outbound_watermark: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+
+class CRMLink(OrgScoped, Base):
+    """lead ↔ remote CRM contact identity (M5.2). One row per (connection,
+    lead); the reverse unique on (connection, remote_id) makes re-import an
+    update, not a duplicate — the CRM-side id is the join key on every
+    subsequent sync in either direction."""
+
+    __tablename__ = "crm_links"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "lead_id", name="uq_crm_link_lead"),
+        UniqueConstraint("connection_id", "remote_id", name="uq_crm_link_remote"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("crm_connections.id"), nullable=False, index=True
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("leads.id"), nullable=False, index=True
+    )
+    remote_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # remote object type the id points at (Salesforce splits Contact/Lead)
+    remote_type: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+
+    connection: Mapped[CRMConnection] = relationship()
+
+
+class CRMSyncRun(OrgScoped, Base):
+    """One import or activity-push execution (M5.2) — the auditable record.
+    `direction` inbound = list import (request-triggered), outbound = the beat
+    task's activity push. `stats` JSONB carries the tally (imported/deduped/
+    suppressed/updated for inbound; activities/meetings/skipped for outbound)."""
+
+    __tablename__ = "crm_sync_runs"
+    __table_args__ = (
+        Index("ix_crm_sync_runs_connection_created", "connection_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("crm_connections.id"), nullable=False
+    )
+    direction: Mapped[str] = mapped_column(Text, nullable=False)  # inbound|outbound
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="running"
+    )  # running|succeeded|failed
+    stats: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    connection: Mapped[CRMConnection] = relationship()

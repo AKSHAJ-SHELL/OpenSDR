@@ -424,6 +424,67 @@ export type UserOut = {
   created_at: string | null;
 };
 
+// ---------------------------------------------------------------- CRM sync (M5.2)
+
+export type CRMProvider = "hubspot" | "salesforce";
+
+/** Credentials are write-only on the API: no response ever carries them. */
+export type CRMConnection = {
+  id: string;
+  provider: CRMProvider;
+  name: string;
+  /** Overlay on the provider default map: {crm_attr: leadrow_field | null}. */
+  field_map: Record<string, string | null>;
+  active: boolean;
+  outbound_watermark: string | null;
+  created_at: string | null;
+};
+
+export type CRMConnectionCreate = {
+  provider: CRMProvider;
+  name: string;
+  // hubspot: {access_token}; salesforce: {instance_url, client_id, client_secret}
+  credentials: Record<string, string>;
+};
+
+export type CRMConnectionUpdate = {
+  name?: string;
+  credentials?: Record<string, string>; // full replacement when present
+  field_map?: Record<string, string | null>;
+  active?: boolean;
+};
+
+export type CRMTestResult = { ok: boolean; detail: string };
+
+export type CRMList = { remote_id: string; name: string; size: number | null };
+
+export type CRMPreviewAction = "create" | "update" | "unchanged" | "suppressed" | "no_email";
+
+export type CRMPreviewRow = {
+  email: string;
+  action: CRMPreviewAction;
+  /** Lead fields a committed import would overwrite: field → {from, to}. */
+  changes: Record<string, { from: string | null; to: string | null }>;
+};
+
+export type CRMImportResult = {
+  dry_run: boolean;
+  stats: Record<string, number>;
+  preview: CRMPreviewRow[];
+  run_id: string | null; // committed imports leave a sync-run record
+};
+
+export type CRMSyncRun = {
+  id: string;
+  connection_id: string;
+  direction: "inbound" | "outbound";
+  status: "running" | "succeeded" | "failed";
+  stats: Record<string, number>;
+  error: string | null;
+  created_at: string | null;
+  finished_at: string | null;
+};
+
 export type TimelineItem = {
   kind: "email_sent" | "reply" | "task" | string;
   at: string;

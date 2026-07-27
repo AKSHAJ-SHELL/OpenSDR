@@ -63,6 +63,7 @@ app.conf.update(
         "craftsman.workers.tasks.settle_bandit": {"queue": "settle"},
         "craftsman.workers.tasks.redrive_unsent": {"queue": "settle"},
         "craftsman.workers.tasks.deliver_webhook": {"queue": "settle"},
+        "craftsman.workers.tasks.crm_sync_tick": {"queue": "settle"},
         "craftsman.workers.tasks.sequencer_tick": {"queue": "send"},
         "craftsman.workers.tasks.collect_signals": {"queue": "research"},
     },
@@ -79,6 +80,11 @@ app.conf.update(
         "collect-signals": {
             "task": "craftsman.workers.tasks.collect_signals",
             "schedule": 86400.0,
+        },
+        # CRM activity push (M5.2). A no-op unless a CRM connection is active.
+        "crm-sync": {
+            "task": "craftsman.workers.tasks.crm_sync_tick",
+            "schedule": 900.0,
         },
     },
     task_acks_late=True,

@@ -72,6 +72,7 @@ Key modules:
 | `craftsman/inbox/pipeline.py` | Reply → classify → state → bandit → handoff |
 | `craftsman/sender/smtp.py` | Suppression/cap/warmup/rate-limit checks + compliant headers |
 | `craftsman/llm/` | Provider-agnostic structured-output client (Claude, OpenAI/compatible, Ollama, mock for tests) |
+| `craftsman/crm/` | CRM sync (M5.2): HubSpot + Salesforce adapters, field mapping, import/activity push |
 | `web/` | Next.js dashboard (Gojiberry-style agent UI) |
 
 ## Deliverability (read this before you send)
@@ -311,6 +312,39 @@ to your https endpoints, signed with HMAC-SHA256 over the raw body
 Cal.com). Endpoint URLs pass the SSRF guard at registration and again at every
 delivery; retries back off exponentially up to `WEBHOOK_MAX_ATTEMPTS`, then
 dead-letter.
+
+## CRM sync (HubSpot, Salesforce)
+
+Put your CRM to work (M5.2): import closed-lost/churned/MQL lists as lead
+sources, and push engagement history back to the contact timeline.
+
+- **Connect** (`POST /crm/connections`, admin): HubSpot uses a private-app
+  token (scopes: contacts read, lists read, notes + meetings write);
+  Salesforce uses an OAuth client-credentials app at your My Domain
+  (`instance_url` + client id/secret — the URL passes the SSRF guard at
+  registration and at every use). Credentials are write-only at the API and
+  Fernet-encrypted at rest; no response ever carries them.
+- **Import** (`POST /crm/connections/{id}/import`): pick a HubSpot list or
+  Salesforce campaign; **dry-run is the default** — a row-by-row preview
+  (create/update/unchanged/suppressed) with the exact field diff, zero writes.
+  Committed imports flow through the same ingest gate as CSV (dedupe,
+  suppression, verification) and then the same ICP gate as everything else if
+  you map the list to a campaign — already-verified leads score and enroll
+  immediately; fresh ones enroll on the campaign's next activate, after
+  verification. Conflicts resolve toward the CRM for contact fields
+  (first/last/title/linkedin/timezone — a blank CRM field never clears
+  anything) and toward Craftsman for engagement history and status.
+- **Push** (beat task every 15 min, or `POST /crm/connections/{id}/sync`):
+  sends, classified replies, and meetings land on the linked contact's
+  timeline (HubSpot notes/meeting engagements; Salesforce completed
+  Tasks/Events). Only leads explicitly linked by an import are ever written to
+  the CRM, and pushes are at-most-once past a per-connection watermark. Every
+  import and push leaves an auditable run record (`GET .../runs`).
+
+Field mapping is a per-connection overlay on sane provider defaults
+(`craftsman/crm/mapping.py`); the dashboard's Settings → CRM page has the
+editor plus the dry-run preview table. Other CRMs are a fork away: implement
+the five-method `CRMProvider` protocol in `craftsman/crm/provider.py`.
 
 ## Testing
 

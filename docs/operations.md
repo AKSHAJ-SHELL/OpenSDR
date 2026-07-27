@@ -134,3 +134,25 @@ python -m craftsman.manage_org set-quota --org acme --enrichment-daily-budget 20
 `NULL` means unlimited (the single-tenant self-hoster default). Counters reset
 at the daily sweep; exhausted enrichment budget degrades to verify-only —
 never an error.
+
+## CRM sync operations (M5.2)
+
+- Connections hold live CRM credentials (Fernet-encrypted with
+  `CRAFTSMAN_SECRET_KEY`, like mailbox passwords). Rotation = `PATCH
+  /crm/connections/{id}` with a new `credentials` object; there is no
+  automatic refresh of HubSpot private-app tokens or Salesforce client
+  secrets. `POST .../test` after rotating.
+- The outbound push runs on beat every 15 minutes (`crm_sync_tick`, `settle`
+  queue). It is at-most-once past a per-connection watermark: individual
+  failures are tallied on the sync run (`GET .../runs`) and NOT retried —
+  check the run's `failed` count after CRM-side outages; anything missed in
+  that window is gone from the CRM timeline (Craftsman's own history is
+  unaffected and remains the source of truth for engagement).
+- A connection-level failure (expired token, CRM down) records a `failed`
+  run with the error text and never blocks other connections or orgs.
+- Imports are operator-triggered and dry-run by default. The committed
+  import's run record carries the full tally (imported/deduped/suppressed/
+  updated/linked/enrolled) — export-worthy evidence of exactly what a list
+  pull did.
+- Deactivating a connection (`PATCH {"active": false}`) stops the beat push;
+  links and run history remain for audit.

@@ -1063,3 +1063,35 @@ def reset_daily_counters():
         from craftsman.core.models import Org
 
         db.execute(update(Org).values(sent_today=0, enrichment_calls_today=0))
+
+
+# ------------------------------------------------------------------ CRM sync (M5.2)
+
+
+@app.task
+def crm_sync_tick():
+    """Beat sweep: push activity past each active connection's watermark to its
+    CRM. Per-org, per-connection; one connection's failure (bad token, CRM
+    down) is recorded on its own sync run and never blocks the others."""
+    from craftsman.core.models import CRMConnection
+    from craftsman.crm.sync import push_activity, record_run
+
+    with session_scope() as db:
+        pushed = 0
+        for oid in _org_ids(db):
+            with org_context(oid):
+                connections = db.scalars(
+                    select(CRMConnection).where(CRMConnection.active)
+                ).all()
+                for connection in connections:
+                    try:
+                        stats = _run(push_activity(db, connection))
+                        record_run(db, connection, "outbound", stats)
+                        pushed += stats.get("pushed", 0)
+                    except Exception as e:  # noqa: BLE001 — isolate per connection
+                        record_run(db, connection, "outbound", {}, error=str(e))
+                        log.warning(
+                            "crm_sync_tick failed for connection %s: %s",
+                            connection.id, e,
+                        )
+        return pushed
