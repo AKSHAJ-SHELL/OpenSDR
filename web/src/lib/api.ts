@@ -7,6 +7,13 @@ import type {
   CampaignCreate,
   CampaignDetail,
   CampaignUpdate,
+  CRMConnection,
+  CRMConnectionCreate,
+  CRMConnectionUpdate,
+  CRMImportResult,
+  CRMList,
+  CRMSyncRun,
+  CRMTestResult,
   DeliverabilityReport,
   DomainHealth,
   DryRun,
@@ -205,6 +212,17 @@ export const api = {
   dialTask: (id: string) =>
     post<{ call_sid: string; to_operator: string }>(`/tasks/${id}/dial`),
   leadTimeline: (leadId: string) => get<TimelineItem[]>(`/leads/${leadId}/timeline`),
+  crmConnections: () => get<CRMConnection[]>("/crm/connections"),
+  createCrmConnection: (body: CRMConnectionCreate) =>
+    post<CRMConnection>("/crm/connections", body),
+  updateCrmConnection: (id: string, body: CRMConnectionUpdate) =>
+    patch<CRMConnection>(`/crm/connections/${id}`, body),
+  testCrmConnection: (id: string) => post<CRMTestResult>(`/crm/connections/${id}/test`),
+  crmLists: (id: string) => get<CRMList[]>(`/crm/connections/${id}/lists`),
+  crmImport: (id: string, body: { list_id: string; campaign_id?: string; dry_run: boolean }) =>
+    post<CRMImportResult>(`/crm/connections/${id}/import`, body),
+  crmSync: (id: string) => post<CRMSyncRun>(`/crm/connections/${id}/sync`),
+  crmRuns: (id: string) => get<CRMSyncRun[]>(`/crm/connections/${id}/runs`),
   users: () => get<UserOut[]>("/users"),
   createUser: (body: { email: string; role: Role; display_name?: string; password?: string }) =>
     post<UserOut>("/users", body),
